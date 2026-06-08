@@ -1,0 +1,9 @@
+**/dist/**
+**/build/**
+**/.next/**
+**/node_modules/**
+**/coverage/**
+package-lock.json
+# Docs are hand-formatted; don't let Prettier reflow prose.
+*.md
+docs/

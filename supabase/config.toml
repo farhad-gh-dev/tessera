@@ -1,0 +1,31 @@
+# Supabase local-dev config. `supabase start` reads this to run the full stack
+# (Postgres, Auth, Storage, Realtime, Studio) in Docker on your machine — no
+# cloud project needed. Anything not set here uses the CLI's defaults; this file
+# only records Tessera's deviations.
+#
+# Generated for Supabase CLI v2.x. If `supabase start` rejects a field after a
+# CLI upgrade, run `supabase init --force` to regenerate a full config for your
+# version, then re-apply the three tweaks below (major_version, auth URLs,
+# analytics off).
+
+project_id = "tessera"
+
+[db]
+# Match Supabase's hosted Postgres major version so local mirrors prod.
+major_version = 15
+
+[auth]
+# The Next.js web app's local dev origin (M2) — used for magic-link redirects.
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = ["http://127.0.0.1:3000"]
+
+[auth.email]
+# Local convenience: don't require email confirmation to sign in. Magic-link and
+# signup emails still land in the local Mailpit (http://127.0.0.1:54324).
+enable_confirmations = false
+
+[analytics]
+# The analytics stack (Logflare + Vector) is the heaviest part of the local
+# bundle and only powers Studio's Logs view. Off by default to keep
+# `supabase start` light; flip to true if you want local logs.
+enabled = false
