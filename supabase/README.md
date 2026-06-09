@@ -63,6 +63,17 @@ It signs in and runs two in-memory "devices" through whichever Supabase your
 convergence via `sync_push` under row-level security. Without the env vars it
 skips cleanly.
 
+To verify **account deletion** (PRD §8.3) end-to-end — non-destructively, on a
+throwaway user it creates and deletes itself:
+
+```bash
+node --env-file=.env packages/db/scripts/account-delete-smoke.mjs
+```
+
+It seeds a row in every table, calls `delete_account()`, and (with
+`SUPABASE_SERVICE_ROLE_KEY` set) cross-checks that the cascade emptied every
+table and removed the auth user.
+
 ## What's modeled
 
 See PRD §10. Tables: `user_settings`, `provider_keys`, `snippets`, `tags`,
@@ -75,6 +86,11 @@ See PRD §10. Tables: `user_settings`, `provider_keys`, `snippets`, `tags`,
   runs under the caller's RLS so a user can only write their own rows.
 - **`set_updated_at` trigger** — honors a client-supplied `updated_at`, so
   conflict resolution is "last edit wins" (see `packages/db/README.md`).
+- **`delete_account()`** — a `SECURITY DEFINER` RPC the signed-in user calls to
+  erase itself (PRD §8.3). It deletes the caller's `auth.users` row; every table's
+  `user_id` FK is `on delete cascade`, so the whole account purges in one shot.
+  (Saved images are removed client-side via the Storage API first — Supabase
+  blocks direct SQL deletes from `storage.objects`.)
 - **`provider_keys.key_ciphertext`** stores **encrypted** BYO API keys; never
   expose plaintext to the client.
 - **`snippet_embeddings.embedding`** is `vector(1536)` — match this to the chosen

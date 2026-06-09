@@ -37,6 +37,16 @@ export function getStore(): DexieLocalStore {
 }
 
 /**
+ * Wipe every local table — including the sync outbox — so nothing lingers or
+ * replays. Used after account deletion (so a deleted account leaves no trace in
+ * the browser, and a different user signing in next starts clean).
+ */
+export async function clearLocalData(): Promise<void> {
+  const db = getDb();
+  await Promise.all(db.tables.map((t) => t.clear()));
+}
+
+/**
  * Build a sync engine over the given authenticated client. Tables are listed
  * parent-first so a push lands referenced rows before their referrers (e.g.
  * `documents` before `document_items`), satisfying the cross-table foreign keys.
