@@ -19,18 +19,18 @@ packages/
   db/          # Local-first store + sync engine (IndexedDB ⇄ Supabase, LWW + tombstones)
 apps/
   extension/   # Chrome MV3 extension (Vite+React) — capture, deep-link anchor, sync  [M1 ✓]
-  web/         # Next.js platform — synced library + documents/notes  [M2–M3 ✓; export + AI to come]
+  web/         # Next.js platform — library + documents/notes + export + account  [M2–M4 ✓; AI (M5) to come]
 supabase/
   migrations/  # Postgres schema as versioned migrations (RLS + pgvector + sync_push + Storage)
 ```
 
-## Status — M0–M3 complete · M4 (export + beta hardening) next
+## Status — M0–M4 complete · M5 (AI study tools) next
 
 - [x] **M0 — Foundations.** Monorepo + shared `@tessera/core` (domain model + deep-link anchoring), Postgres schema (RLS + `sync_push` + pgvector + Storage) as `db push`-able migrations, dev tooling (ESLint, Prettier, Vitest) + CI, and the `@tessera/db` local-first sync engine — LWW + tombstones, verified in-memory **and end-to-end** against local Supabase
 - [x] **M1 — Capture + sync.** Chrome MV3 extension (`apps/extension`): text / image / screenshot-region capture → deep-link anchor → persist (Dexie) → re-highlight on revisit; email-password auth + push/pull cloud sync; per-page popup, first-run guide + teaching empty states
 - [x] **M2 — Platform library.** Next.js web app (`apps/web`): magic-link + email-password auth, browse-by-website, page drill-down, full-text search, filter by type / color / date, snippet detail, and "open source" native `#:~:text=` deep links
 - [x] **M3 — Documents + notes.** Custom documents that reference snippets from any site (multi-source), drag-reorder (+ keyboard up/down), interleaved headings/notes, "where used"; per-snippet note / tag / color / light-text editing; tag filter + most-referenced sort. Sync engine hardened for cross-table foreign keys (parent-first push order + per-table error isolation)
-- [ ] **M4 — Export + beta hardening** — Markdown / PDF export, onboarding polish, account delete/export
+- [x] **M4 — Export + beta hardening.** **Export** a document to Markdown (block-quoted snippets with source links + your notes/headings inline) or PDF via a clean print view, every snippet carrying its provenance. **Account**: one-click data export (everything you've saved as JSON) and irreversible account deletion that purges every trace (cascade-delete + Storage cleanup). **Onboarding**: a live "Getting started" checklist (capture → create a document → organize a snippet) plus teaching empty states. **Reliability**: row-level sync-push isolation (one server-rejected row no longer blocks the rest) and a partial-sync indicator that shows when changes are still unsynced
 - [ ] **M5 — AI study tools** — summaries, grounded Q&A with citations, flashcards, quizzes (BYOK)
 
 See the PRD §11 for the full M0–M5 roadmap, and [`packages/db/README.md`](./packages/db/README.md) for the sync design.

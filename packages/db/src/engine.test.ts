@@ -3,7 +3,13 @@
  * (`MemoryLocalStore`s) talking to one cloud (`MemoryRemoteAdapter`).
  */
 import { describe, expect, it } from 'vitest';
-import type { PullPage, RemoteAdapter, SyncRecord, TableName, Timestamp } from './types.js';
+import type {
+  PullPage,
+  RemoteAdapter,
+  SyncRecord,
+  TableName,
+  Timestamp,
+} from './types.js';
 import { SyncEngine } from './engine.js';
 import { MemoryLocalStore, MemoryRemoteAdapter } from './memory.js';
 import { localUpsert, localDelete } from './mutators.js';
@@ -159,7 +165,11 @@ describe('SyncEngine', () => {
       },
     };
     const local = new MemoryLocalStore();
-    const engine = new SyncEngine({ local, remote, tables: ['documents', 'document_items'] });
+    const engine = new SyncEngine({
+      local,
+      remote,
+      tables: ['documents', 'document_items'],
+    });
 
     const base = { userId: 'u1', createdAt: T(1), updatedAt: T(1) };
     await localUpsert(local, 'documents', { id: 'd1', title: 'Doc', ...base }, at(1));
@@ -180,6 +190,38 @@ describe('SyncEngine', () => {
     const outbox = await local.listOutbox();
     expect(outbox.map((e) => e.table)).toEqual(['document_items']);
     expect(pulled).toEqual(['documents', 'document_items']);
+  });
+
+  it('isolates a single poison row — healthy rows in the same table still push', async () => {
+    // A remote that rejects snippet s2 (as a row-level constraint violation
+    // would) but accepts everything else. The batch push therefore fails, and the
+    // engine must fall back to per-row pushes so s1/s3 still land.
+    const accepted = new MemoryRemoteAdapter();
+    const remote: RemoteAdapter = {
+      async push(table, records) {
+        if (records.some((r) => r.id === 's2')) throw new Error('row s2 rejected');
+        return accepted.push(table, records);
+      },
+      async pull(table, cursor, limit) {
+        return accepted.pull(table, cursor, limit);
+      },
+    };
+    const local = new MemoryLocalStore();
+    const engine = new SyncEngine({ local, remote, tables: ['snippets'] });
+
+    await localUpsert(local, 'snippets', snippet('s1'), at(1));
+    await localUpsert(local, 'snippets', snippet('s2'), at(1));
+    await localUpsert(local, 'snippets', snippet('s3'), at(1));
+
+    // The push still reports failure (the poison row really can't sync)...
+    await expect(engine.pushOnce()).rejects.toThrow('row s2 rejected');
+
+    // ...but the healthy rows pushed and drained; only the poison row stays queued.
+    expect(await accepted.peek('snippets', 's1')).toBeTruthy();
+    expect(await accepted.peek('snippets', 's3')).toBeTruthy();
+    expect(await accepted.peek('snippets', 's2')).toBeUndefined();
+    expect((await local.listOutbox()).map((e) => e.recordId)).toEqual(['s2']);
+    expect(await engine.pendingCount()).toBe(1);
   });
 
   it('is a no-op once converged (idempotent)', async () => {

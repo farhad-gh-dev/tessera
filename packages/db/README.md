@@ -45,6 +45,14 @@ Supabase.
 It is idempotent throughout — interrupt it anywhere and the next run finishes the
 job, with no data loss.
 
+Failures are isolated so they never starve healthy data: tables push
+**parent-first** (cross-table foreign keys resolve — `documents` before
+`document_items`), each table's push and pull is attempted independently, and a
+**batch the server rejects for one bad row is retried row-by-row** so only the
+offending record stays queued while its siblings push. `engine.pendingCount()`
+reports how many local changes are still waiting (offline, or a server-rejected
+row) so the UI can surface an unsynced/stuck state.
+
 ## Backend requirements
 
 `supabase/migrations/` carries the two server-side pieces this engine relies on

@@ -26,6 +26,10 @@ interface SessionContextValue {
   syncing: boolean;
   /** Epoch ms of the last successful sync, or null. */
   lastSyncedAt: number | null;
+  /** Message from the most recent failed sync, or null when the last sync was clean. */
+  lastSyncError: string | null;
+  /** Local changes still waiting to sync (offline, or a row the server rejected). */
+  pendingCount: number;
   /** Push local changes + pull remote deltas now. */
   syncNow: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -53,6 +57,8 @@ export function Providers({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [lastSyncError, setLastSyncError] = useState<string | null>(null);
+  const [pendingCount, setPendingCount] = useState(0);
   const engineRef = useRef<SyncEngine | null>(null);
 
   const syncNow = useCallback(async () => {
@@ -61,10 +67,19 @@ export function Providers({ children }: { children: ReactNode }) {
     setSyncing(true);
     try {
       await engine.syncOnce();
+      setLastSyncError(null);
       setLastSyncedAt(Date.now());
     } catch (error) {
+      setLastSyncError(error instanceof Error ? error.message : 'Sync failed');
       console.error('[Tessera] sync failed', error);
     } finally {
+      // Reflect anything still queued (offline, or a row the server rejected) so
+      // the UI can show the library isn't fully synced. Best-effort UI state.
+      try {
+        setPendingCount(await engine.pendingCount());
+      } catch {
+        /* ignore */
+      }
       setSyncing(false);
     }
   }, []);
@@ -85,6 +100,8 @@ export function Providers({ children }: { children: ReactNode }) {
         void syncNow();
       } else {
         engineRef.current = null;
+        setPendingCount(0);
+        setLastSyncError(null);
       }
     };
 
@@ -137,10 +154,22 @@ export function Providers({ children }: { children: ReactNode }) {
       supabase,
       syncing,
       lastSyncedAt,
+      lastSyncError,
+      pendingCount,
       syncNow,
       signOut,
     }),
-    [status, user, supabase, syncing, lastSyncedAt, syncNow, signOut],
+    [
+      status,
+      user,
+      supabase,
+      syncing,
+      lastSyncedAt,
+      lastSyncError,
+      pendingCount,
+      syncNow,
+      signOut,
+    ],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

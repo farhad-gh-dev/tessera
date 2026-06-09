@@ -31,6 +31,12 @@ export interface SyncResult {
   pulled: number;
 }
 
+/** A queued outbox entry paired with its current local record, ready to push. */
+interface OutboxPair {
+  entry: OutboxEntry;
+  record: SyncRecord;
+}
+
 export class SyncEngine {
   private readonly local: LocalStore;
   private readonly remote: RemoteAdapter;
@@ -101,39 +107,68 @@ export class SyncEngine {
     let pushed = 0;
     for (const table of ordered) {
       const entries = byTable.get(table)!;
+
+      // Resolve the current record for each queued entry. An entry whose record
+      // has vanished locally has nothing to push, so drop it from the outbox.
+      const pairs: OutboxPair[] = [];
+      const missing: OutboxEntry[] = [];
+      for (const entry of entries) {
+        const rec = await this.local.get(table, entry.recordId);
+        if (rec) pairs.push({ entry, record: rec });
+        else missing.push(entry);
+      }
+      if (missing.length > 0) await this.local.removeOutbox(missing);
+      if (pairs.length === 0) continue;
+
       try {
-        const records: SyncRecord[] = [];
-        for (const entry of entries) {
-          const rec = await this.local.get(table, entry.recordId);
-          if (rec) records.push(rec);
-        }
-        if (records.length === 0) {
-          await this.local.removeOutbox(entries);
+        // Fast path: one batched push for the whole table.
+        await this.remote.push(
+          table,
+          pairs.map((p) => p.record),
+        );
+        pushed += await this.settle(table, pairs);
+      } catch (batchErr) {
+        if (pairs.length === 1) {
+          // Nothing to isolate — this single row genuinely can't sync. Leave it
+          // queued to retry next run and surface the error.
+          errors.push(batchErr);
           continue;
         }
-
-        await this.remote.push(table, records);
-        pushed += records.length;
-
-        // Clear only entries not re-edited while the push was in flight. A record
-        // edited mid-push has a newer `updatedAt` and a refreshed outbox entry, so
-        // it stays queued and pushes on the next run.
-        const settled: OutboxEntry[] = [];
-        for (const entry of entries) {
-          const rec = await this.local.get(table, entry.recordId);
-          if (!rec || rec.updatedAt === entry.enqueuedUpdatedAt) {
-            settled.push(entry);
+        // Row-level isolation: a batch can fail because of just one poison row
+        // (e.g. a constraint the server rejects). Retry each row on its own so
+        // the healthy rows still land and only the offending row(s) stay queued.
+        for (const pair of pairs) {
+          try {
+            await this.remote.push(table, [pair.record]);
+            pushed += await this.settle(table, [pair]);
+          } catch (rowErr) {
+            errors.push(rowErr);
           }
         }
-        await this.local.removeOutbox(settled);
-      } catch (err) {
-        // Isolate this table's failure: leave its outbox entries in place to
-        // retry next run (idempotent, no data loss) and carry on with the rest.
-        errors.push(err);
       }
     }
 
     return { count: pushed, errors };
+  }
+
+  /**
+   * Drop outbox entries for records that pushed cleanly, keeping any re-edited
+   * mid-flight (their `updatedAt` no longer matches what was enqueued, so they
+   * stay queued and push next run). Returns how many records were pushed.
+   */
+  private async settle(table: TableName, pairs: readonly OutboxPair[]): Promise<number> {
+    const settled: OutboxEntry[] = [];
+    for (const { entry } of pairs) {
+      const rec = await this.local.get(table, entry.recordId);
+      if (!rec || rec.updatedAt === entry.enqueuedUpdatedAt) settled.push(entry);
+    }
+    if (settled.length > 0) await this.local.removeOutbox(settled);
+    return pairs.length;
+  }
+
+  /** Count of local changes still awaiting push — for surfacing pending/stuck state in the UI. */
+  async pendingCount(): Promise<number> {
+    return (await this.local.listOutbox()).length;
   }
 
   /** Pull remote deltas for every registered table and reconcile them locally. */

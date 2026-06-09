@@ -18,11 +18,14 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-5">
             <Link href="/" className="flex items-center gap-2">
               <div className="h-6 w-6 rounded bg-indigo-600" />
-              <span className="text-lg font-semibold tracking-tight text-slate-900">Tessera</span>
+              <span className="text-lg font-semibold tracking-tight text-slate-900">
+                Tessera
+              </span>
             </Link>
             <nav className="flex items-center gap-1 text-sm">
               <NavLink href="/" label="Library" matchExact />
               <NavLink href="/documents" label="Documents" />
+              <NavLink href="/account" label="Account" />
             </nav>
           </div>
           <div className="flex items-center gap-3">
@@ -59,7 +62,9 @@ function NavLink({
       href={href}
       className={cn(
         'rounded-md px-2.5 py-1 font-medium transition-colors',
-        active ? 'bg-slate-100 text-slate-900' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700',
+        active
+          ? 'bg-slate-100 text-slate-900'
+          : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700',
       )}
     >
       {label}
@@ -68,14 +73,35 @@ function NavLink({
 }
 
 function SyncStatus() {
-  const { syncing, lastSyncedAt, syncNow } = useSession();
+  const { syncing, lastSyncedAt, lastSyncError, pendingCount, syncNow } = useSession();
+  const hasIssue = !syncing && (pendingCount > 0 || lastSyncError != null);
+
+  const label = syncing
+    ? 'Syncing…'
+    : pendingCount > 0
+      ? `${pendingCount} unsynced`
+      : lastSyncError
+        ? 'Sync issue'
+        : lastSyncedAt
+          ? `Synced ${relativeTime(new Date(lastSyncedAt).toISOString())}`
+          : 'Synced';
+
+  const title = lastSyncError
+    ? `${lastSyncError} — click to retry`
+    : pendingCount > 0
+      ? `${pendingCount} change${pendingCount === 1 ? '' : 's'} waiting to sync — click to retry`
+      : 'Sync now';
+
   return (
     <button
       type="button"
       onClick={() => void syncNow()}
       disabled={syncing}
-      title="Sync now"
-      className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-600 disabled:cursor-default"
+      title={title}
+      className={cn(
+        'flex items-center gap-1.5 text-xs hover:text-slate-600 disabled:cursor-default',
+        hasIssue ? 'text-amber-600' : 'text-slate-400',
+      )}
     >
       {syncing ? (
         <>
@@ -84,10 +110,13 @@ function SyncStatus() {
         </>
       ) : (
         <>
-          <span className="h-2 w-2 rounded-full bg-emerald-400" />
-          <span className="hidden sm:inline">
-            {lastSyncedAt ? `Synced ${relativeTime(new Date(lastSyncedAt).toISOString())}` : 'Synced'}
-          </span>
+          <span
+            className={cn(
+              'h-2 w-2 rounded-full',
+              hasIssue ? 'bg-amber-400' : 'bg-emerald-400',
+            )}
+          />
+          <span className="hidden sm:inline">{label}</span>
         </>
       )}
     </button>
