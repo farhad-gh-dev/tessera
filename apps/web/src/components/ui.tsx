@@ -2,9 +2,12 @@
 
 import {
   forwardRef,
+  useEffect,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type InputHTMLAttributes,
+  type ReactNode,
+  type TextareaHTMLAttributes,
 } from 'react';
 import { cn } from '@/lib/cn';
 
@@ -67,6 +70,81 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
     );
   },
 );
+
+/* -------------------------------------------------------------------------- */
+/* Textarea                                                                   */
+/* -------------------------------------------------------------------------- */
+
+export const Textarea = forwardRef<
+  HTMLTextAreaElement,
+  TextareaHTMLAttributes<HTMLTextAreaElement>
+>(function Textarea({ className, ...props }, ref) {
+  return (
+    <textarea
+      ref={ref}
+      className={cn(
+        'w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500',
+        className,
+      )}
+      {...props}
+    />
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Dialog (lean modal)                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** A minimal centered modal: backdrop click + Escape close, no portal/deps. */
+export function Dialog({
+  open,
+  onClose,
+  title,
+  children,
+  className,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center p-4 sm:items-center">
+      <button
+        type="button"
+        aria-label="Close"
+        onClick={onClose}
+        className="absolute inset-0 cursor-default bg-slate-900/40 backdrop-blur-sm"
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        className={cn(
+          'relative z-10 mt-16 w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-xl sm:mt-0',
+          className,
+        )}
+      >
+        {title && (
+          <div className="border-b border-slate-100 px-5 py-3 text-sm font-semibold text-slate-900">
+            {title}
+          </div>
+        )}
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
 
 /* -------------------------------------------------------------------------- */
 /* Card                                                                       */

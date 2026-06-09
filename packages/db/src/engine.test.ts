@@ -3,10 +3,10 @@
  * (`MemoryLocalStore`s) talking to one cloud (`MemoryRemoteAdapter`).
  */
 import { describe, expect, it } from 'vitest';
-import type { SyncRecord } from './types.js';
+import type { PullPage, RemoteAdapter, SyncRecord, TableName, Timestamp } from './types.js';
 import { SyncEngine } from './engine.js';
 import { MemoryLocalStore, MemoryRemoteAdapter } from './memory.js';
-import { localDelete, localUpsert } from './mutators.js';
+import { localUpsert, localDelete } from './mutators.js';
 
 const T = (s: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, s)).toISOString();
 /** A constant clock fixed at second `s` — makes last-write-wins deterministic. */
@@ -105,6 +105,81 @@ describe('SyncEngine', () => {
 
     expect((await b.get('snippets', 's1'))?.deletedAt).toBe(T(30));
     expect(await liveCount(b)).toBe(0);
+  });
+
+  it('pushes tables parent-first so foreign keys resolve (documents before items)', async () => {
+    // The outbox is keyed by [table+recordId], so its natural order is
+    // alphabetical — which would push `document_items` before `documents`. The
+    // engine must instead follow the declared `tables` order. A recording remote
+    // captures the push sequence so the ordering is asserted directly.
+    const pushOrder: TableName[] = [];
+    const recording: RemoteAdapter = {
+      async push(table: TableName, records: SyncRecord[]) {
+        pushOrder.push(table);
+        return records;
+      },
+      async pull(_t: TableName, cursor: Timestamp | null): Promise<PullPage> {
+        return { records: [], cursor };
+      },
+    };
+    const local = new MemoryLocalStore();
+    const engine = new SyncEngine({
+      local,
+      remote: recording,
+      tables: ['documents', 'document_items'],
+    });
+
+    const base = { userId: 'u1', createdAt: T(1), updatedAt: T(1) };
+    // Enqueue the child first to make sure ordering is not just incidental.
+    await localUpsert(
+      local,
+      'document_items',
+      { id: 'i1', documentId: 'd1', position: '5', kind: 'snippet_ref', ...base },
+      at(1),
+    );
+    await localUpsert(local, 'documents', { id: 'd1', title: 'Doc', ...base }, at(1));
+
+    await engine.pushOnce();
+    expect(pushOrder).toEqual(['documents', 'document_items']);
+  });
+
+  it('isolates a failing table — others still push and the pull still runs', async () => {
+    // A remote that rejects every `document_items` push (as a foreign-key
+    // violation would) but accepts everything else, and records pull calls.
+    const pulled: TableName[] = [];
+    const accepted = new MemoryRemoteAdapter();
+    const remote: RemoteAdapter = {
+      async push(table, records) {
+        if (table === 'document_items') throw new Error('FK violation');
+        return accepted.push(table, records);
+      },
+      async pull(table, cursor, limit) {
+        pulled.push(table);
+        return accepted.pull(table, cursor, limit);
+      },
+    };
+    const local = new MemoryLocalStore();
+    const engine = new SyncEngine({ local, remote, tables: ['documents', 'document_items'] });
+
+    const base = { userId: 'u1', createdAt: T(1), updatedAt: T(1) };
+    await localUpsert(local, 'documents', { id: 'd1', title: 'Doc', ...base }, at(1));
+    await localUpsert(
+      local,
+      'document_items',
+      { id: 'i1', documentId: 'd1', position: '5', kind: 'snippet_ref', ...base },
+      at(1),
+    );
+
+    // The run reports failure (the poison row really can't sync)...
+    await expect(engine.syncOnce()).rejects.toThrow('FK violation');
+
+    // ...but the healthy table pushed and drained, the poison row stayed queued,
+    // and the pull phase still ran for every table despite the push failure.
+    expect(await accepted.peek('documents', 'd1')).toBeTruthy();
+    expect(await accepted.peek('document_items', 'i1')).toBeUndefined();
+    const outbox = await local.listOutbox();
+    expect(outbox.map((e) => e.table)).toEqual(['document_items']);
+    expect(pulled).toEqual(['documents', 'document_items']);
   });
 
   it('is a no-op once converged (idempotent)', async () => {

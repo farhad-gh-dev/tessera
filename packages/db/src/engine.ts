@@ -60,15 +60,27 @@ export class SyncEngine {
   }
 
   private async run(): Promise<SyncResult> {
-    const pushed = await this.pushOnce();
-    const pulled = await this.pullOnce();
-    return { pushed, pulled };
+    // Attempt every table in both phases even if some fail, so one table's
+    // problem (e.g. a row the server rejects) can't starve the others or the
+    // pull. Errors are still surfaced once everything has been attempted.
+    const push = await this.pushAll();
+    const pull = await this.pullAll();
+    const errors = [...push.errors, ...pull.errors];
+    if (errors.length > 0) throw combineErrors(errors);
+    return { pushed: push.count, pulled: pull.count };
   }
 
   /** Drain the outbox to the remote. Returns the number of records pushed. */
   async pushOnce(): Promise<number> {
+    const { count, errors } = await this.pushAll();
+    if (errors.length > 0) throw combineErrors(errors);
+    return count;
+  }
+
+  private async pushAll(): Promise<{ count: number; errors: unknown[] }> {
+    const errors: unknown[] = [];
     const outbox = await this.local.listOutbox();
-    if (outbox.length === 0) return 0;
+    if (outbox.length === 0) return { count: 0, errors };
 
     const byTable = new Map<TableName, OutboxEntry[]>();
     for (const entry of outbox) {
@@ -77,44 +89,71 @@ export class SyncEngine {
       else byTable.set(entry.table, [entry]);
     }
 
+    // Push in declared-table order so a parent row lands before a child that
+    // references it (e.g. `documents` before `document_items`) — each table's
+    // push is its own committed RPC, so cross-table foreign keys are satisfied.
+    // Any table not in the declared list is pushed afterwards.
+    const ordered: TableName[] = [
+      ...this.tables.filter((t) => byTable.has(t)),
+      ...[...byTable.keys()].filter((t) => !this.tables.includes(t)),
+    ];
+
     let pushed = 0;
-    for (const [table, entries] of byTable) {
-      const records: SyncRecord[] = [];
-      for (const entry of entries) {
-        const rec = await this.local.get(table, entry.recordId);
-        if (rec) records.push(rec);
-      }
-      if (records.length === 0) {
-        await this.local.removeOutbox(entries);
-        continue;
-      }
-
-      await this.remote.push(table, records);
-      pushed += records.length;
-
-      // Clear only entries not re-edited while the push was in flight. A record
-      // edited mid-push has a newer `updatedAt` and a refreshed outbox entry, so
-      // it stays queued and pushes on the next run.
-      const settled: OutboxEntry[] = [];
-      for (const entry of entries) {
-        const rec = await this.local.get(table, entry.recordId);
-        if (!rec || rec.updatedAt === entry.enqueuedUpdatedAt) {
-          settled.push(entry);
+    for (const table of ordered) {
+      const entries = byTable.get(table)!;
+      try {
+        const records: SyncRecord[] = [];
+        for (const entry of entries) {
+          const rec = await this.local.get(table, entry.recordId);
+          if (rec) records.push(rec);
         }
+        if (records.length === 0) {
+          await this.local.removeOutbox(entries);
+          continue;
+        }
+
+        await this.remote.push(table, records);
+        pushed += records.length;
+
+        // Clear only entries not re-edited while the push was in flight. A record
+        // edited mid-push has a newer `updatedAt` and a refreshed outbox entry, so
+        // it stays queued and pushes on the next run.
+        const settled: OutboxEntry[] = [];
+        for (const entry of entries) {
+          const rec = await this.local.get(table, entry.recordId);
+          if (!rec || rec.updatedAt === entry.enqueuedUpdatedAt) {
+            settled.push(entry);
+          }
+        }
+        await this.local.removeOutbox(settled);
+      } catch (err) {
+        // Isolate this table's failure: leave its outbox entries in place to
+        // retry next run (idempotent, no data loss) and carry on with the rest.
+        errors.push(err);
       }
-      await this.local.removeOutbox(settled);
     }
 
-    return pushed;
+    return { count: pushed, errors };
   }
 
   /** Pull remote deltas for every registered table and reconcile them locally. */
   async pullOnce(): Promise<number> {
+    const { count, errors } = await this.pullAll();
+    if (errors.length > 0) throw combineErrors(errors);
+    return count;
+  }
+
+  private async pullAll(): Promise<{ count: number; errors: unknown[] }> {
+    const errors: unknown[] = [];
     let pulled = 0;
     for (const table of this.tables) {
-      pulled += await this.pullTable(table);
+      try {
+        pulled += await this.pullTable(table);
+      } catch (err) {
+        errors.push(err);
+      }
     }
-    return pulled;
+    return { count: pulled, errors };
   }
 
   private async pullTable(table: TableName): Promise<number> {
@@ -149,4 +188,13 @@ export class SyncEngine {
     }
     return applied;
   }
+}
+
+/** Fold one-or-more per-table errors into a single throwable, preserving messages. */
+function combineErrors(errors: unknown[]): Error {
+  if (errors.length === 1 && errors[0] instanceof Error) return errors[0];
+  const message = errors
+    .map((e) => (e instanceof Error ? e.message : String(e)))
+    .join('; ');
+  return new Error(message);
 }

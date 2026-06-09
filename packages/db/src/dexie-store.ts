@@ -2,12 +2,13 @@
  * IndexedDB-backed {@link LocalStore} using Dexie — the production local mirror
  * shared by the web app and the extension.
  *
- * The synced domain tables grow as milestones land; the v1 sync spike registers
- * `snippets` plus the engine's own bookkeeping tables: `_meta` (per-table pull
- * cursors) and `_outbox` (pending pushes, keyed by `[table+recordId]`).
+ * The synced domain tables grow as milestones land; the v1 sync spike registered
+ * `snippets`, and M3 adds the document/tag tables. Alongside them live the
+ * engine's own bookkeeping tables: `_meta` (per-table pull cursors) and `_outbox`
+ * (pending pushes, keyed by `[table+recordId]`).
  */
 import { Dexie, type Table } from 'dexie';
-import type { Snippet } from '@tessera/core';
+import type { Document, DocumentItem, Snippet, SnippetTag, Tag } from '@tessera/core';
 import type {
   LocalStore,
   OutboxEntry,
@@ -23,6 +24,10 @@ interface MetaRow {
 
 export class TesseraDexie extends Dexie {
   snippets!: Table<Snippet, string>;
+  documents!: Table<Document, string>;
+  document_items!: Table<DocumentItem, string>;
+  tags!: Table<Tag, string>;
+  snippet_tags!: Table<SnippetTag, string>;
   _meta!: Table<MetaRow, string>;
   _outbox!: Table<OutboxEntry, [string, string]>;
 
@@ -33,6 +38,15 @@ export class TesseraDexie extends Dexie {
       snippets: 'id, domain, url, updatedAt, deletedAt',
       _meta: 'key',
       _outbox: '[table+recordId]',
+    });
+    // M3 — the document reference model + tags. `[documentId+position]` lets the
+    // editor read one document's items already in order; `snippetId` powers the
+    // "where used" lookup and tag-by-snippet joins.
+    this.version(2).stores({
+      documents: 'id, updatedAt, deletedAt',
+      document_items: 'id, documentId, [documentId+position], snippetId, updatedAt, deletedAt',
+      tags: 'id, name, updatedAt, deletedAt',
+      snippet_tags: 'id, snippetId, tagId, updatedAt, deletedAt',
     });
   }
 

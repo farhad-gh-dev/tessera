@@ -67,6 +67,8 @@ export interface Snippet extends SyncFields {
   color?: string;
   /** The user's personal note; travels with the snippet everywhere. */
   note?: string;
+  /** Set once the captured text has been hand-edited on the platform (NOTE-3). */
+  edited?: boolean | null;
 }
 
 /* -------------------------------------------------------------------------- */

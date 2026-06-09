@@ -6,7 +6,7 @@ import { FiltersBar } from '@/components/library/filters-bar';
 import { SiteCard } from '@/components/library/site-card';
 import { SnippetCard } from '@/components/library/snippet-card';
 import { LibraryEmpty, NoResults } from '@/components/library/empty-state';
-import { useSnippets } from '@/lib/hooks';
+import { useSnippetRefCounts, useSnippets, useSnippetTagMap, useTags } from '@/lib/hooks';
 import {
   EMPTY_FILTERS,
   distinctColors,
@@ -24,6 +24,9 @@ import {
  */
 export function LibraryHome() {
   const snippets = useSnippets();
+  const tags = useTags();
+  const tagsBySnippet = useSnippetTagMap();
+  const refCounts = useSnippetRefCounts();
   const [filters, setFilters] = useState<SnippetFilters>(EMPTY_FILTERS);
   const [sort, setSort] = useState<SnippetSort>('newest');
 
@@ -31,8 +34,11 @@ export function LibraryHome() {
   const filtering = hasActiveFilters(filters);
 
   const results = useMemo(
-    () => (snippets ? sortSnippets(filterSnippets(snippets, filters), sort) : []),
-    [snippets, filters, sort],
+    () =>
+      snippets
+        ? sortSnippets(filterSnippets(snippets, filters, tagsBySnippet), sort, refCounts)
+        : [],
+    [snippets, filters, sort, tagsBySnippet, refCounts],
   );
   const sites = useMemo(() => (snippets ? groupByDomain(snippets) : []), [snippets]);
 
@@ -54,6 +60,7 @@ export function LibraryHome() {
         sort={sort}
         onSortChange={setSort}
         availableColors={colors}
+        availableTags={tags ?? []}
         onClear={() => setFilters(EMPTY_FILTERS)}
       />
 

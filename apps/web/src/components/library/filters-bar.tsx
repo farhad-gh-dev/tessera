@@ -21,6 +21,7 @@ interface FiltersBarProps {
   sort: SnippetSort;
   onSortChange: (sort: SnippetSort) => void;
   availableColors: string[];
+  availableTags: { id: string; name: string }[];
   onClear: () => void;
 }
 
@@ -31,6 +32,7 @@ export function FiltersBar({
   sort,
   onSortChange,
   availableColors,
+  availableTags,
   onClear,
 }: FiltersBarProps) {
   const toggleType = (type: SnippetType) => {
@@ -44,6 +46,12 @@ export function FiltersBar({
       ? filters.colors.filter((c) => c !== color)
       : [...filters.colors, color];
     onChange({ ...filters, colors });
+  };
+  const toggleTag = (tagId: string) => {
+    const tags = filters.tags.includes(tagId)
+      ? filters.tags.filter((t) => t !== tagId)
+      : [...filters.tags, tagId];
+    onChange({ ...filters, tags });
   };
 
   return (
@@ -90,6 +98,20 @@ export function FiltersBar({
           </div>
         )}
 
+        {availableTags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {availableTags.map((tag) => (
+              <Chip
+                key={tag.id}
+                active={filters.tags.includes(tag.id)}
+                onClick={() => toggleTag(tag.id)}
+              >
+                #{tag.name}
+              </Chip>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-center gap-1.5 text-slate-500">
           <input
             type="date"
@@ -119,6 +141,7 @@ export function FiltersBar({
           >
             <option value="newest">Newest</option>
             <option value="oldest">Oldest</option>
+            <option value="most_referenced">Most referenced</option>
           </select>
         </label>
 

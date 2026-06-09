@@ -1,22 +1,29 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import type { Snippet, Tag } from '@tessera/core';
 import { useSession } from '@/components/providers';
-import { Badge, Button, Card, Spinner } from '@/components/ui';
+import { Badge, Button, Card, Input, Spinner, Textarea } from '@/components/ui';
 import { Favicon, SnippetImage } from '@/components/library/media';
-import { useSnippet } from '@/lib/hooks';
-import { deleteSnippet } from '@/lib/db';
+import { AddToDocumentDialog } from '@/components/documents/add-to-document-dialog';
+import { useDocumentsForSnippet, useSnippet, useSnippetTags } from '@/lib/hooks';
+import { deleteSnippet, updateSnippet } from '@/lib/db';
+import { addTagToSnippet, removeTagFromSnippet } from '@/lib/tags';
 import { buildSourceUrl, formatDate, typeLabel } from '@/lib/snippets';
 
-/** Full snippet view (LIB-5) with the open-source deep link (LIB-6) and delete. */
+/** Preset highlight colors offered by the color picker (NOTE-2). */
+const COLOR_PRESETS = ['#fde68a', '#a7f3d0', '#bfdbfe', '#fbcfe8', '#ddd6fe', '#fca5a5'];
+
+/** Full snippet view (LIB-5) with deep link (LIB-6), editing (NOTE-1..3) and documents. */
 export function SnippetDetail({ id }: { id: string }) {
   const snippet = useSnippet(id);
   const { supabase, syncNow } = useSession();
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [addingToDoc, setAddingToDoc] = useState(false);
 
   if (snippet === undefined) {
     return (
@@ -38,11 +45,12 @@ export function SnippetDetail({ id }: { id: string }) {
   }
 
   const label = snippet.domain.replace(/^www\./, '');
+  const sync = () => void syncNow();
 
   async function handleDelete() {
     setDeleting(true);
     await deleteSnippet(supabase, id);
-    void syncNow();
+    sync();
     router.push(`/site/${encodeURIComponent(snippet!.domain)}`);
   }
 
@@ -65,32 +73,18 @@ export function SnippetDetail({ id }: { id: string }) {
 
         <div className="p-5">
           {snippet.type === 'text' ? (
-            <blockquote
-              className="border-l-2 pl-4 text-[15px] leading-relaxed text-slate-800"
-              style={{ borderColor: snippet.color || '#a5b4fc' }}
-            >
-              <p className="whitespace-pre-wrap">
-                {snippet.text || <span className="italic text-slate-400">(no text captured)</span>}
-              </p>
-            </blockquote>
+            <TextBody snippet={snippet} onSync={sync} />
           ) : (
             <SnippetImage snippet={snippet} className="max-h-[70vh] w-full rounded-md border border-slate-200" />
           )}
 
-          {snippet.note && (
-            <div className="mt-4 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              <p className="mb-0.5 text-xs font-semibold uppercase tracking-wide text-amber-700">Note</p>
-              <p className="whitespace-pre-wrap">{snippet.note}</p>
-            </div>
-          )}
+          <NoteEditor snippet={snippet} onSync={sync} />
+          <TagEditor snippet={snippet} onSync={sync} />
 
-          <div className="mt-5 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+          <div className="mt-5 flex flex-wrap items-center gap-3 text-xs text-slate-400">
             <Badge>{typeLabel(snippet.type)}</Badge>
-            {snippet.color && (
-              <span className="inline-flex items-center gap-1">
-                <span className="h-3 w-3 rounded-full border border-slate-200" style={{ backgroundColor: snippet.color }} />
-              </span>
-            )}
+            {snippet.edited && <Badge className="bg-amber-100 text-amber-700">edited</Badge>}
+            <ColorPicker snippet={snippet} onSync={sync} />
             <span>Saved {formatDate(snippet.createdAt)}</span>
           </div>
         </div>
@@ -101,6 +95,9 @@ export function SnippetDetail({ id }: { id: string }) {
               Open source ↗
             </Button>
           </a>
+          <Button size="sm" variant="secondary" onClick={() => setAddingToDoc(true)}>
+            Add to document
+          </Button>
           <div className="ml-auto flex items-center gap-2">
             {confirming ? (
               <>
@@ -120,6 +117,232 @@ export function SnippetDetail({ id }: { id: string }) {
           </div>
         </div>
       </Card>
+
+      <WhereUsed snippetId={id} />
+
+      <AddToDocumentDialog
+        open={addingToDoc}
+        onClose={() => setAddingToDoc(false)}
+        snippetId={id}
+      />
+    </div>
+  );
+}
+
+/** Captured text with light in-place editing (NOTE-3); sets the "edited" flag. */
+function TextBody({ snippet, onSync }: { snippet: Snippet; onSync: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(snippet.text ?? '');
+
+  async function save() {
+    await updateSnippet(snippet, { text: value });
+    onSync();
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <div>
+        <Textarea
+          autoFocus
+          rows={5}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          aria-label="Edit captured text"
+        />
+        <div className="mt-2 flex items-center gap-2">
+          <Button size="sm" onClick={() => void save()}>
+            Save
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setValue(snippet.text ?? '');
+              setEditing(false);
+            }}
+          >
+            Cancel
+          </Button>
+          <span className="text-xs text-slate-400">Fixes capture artifacts; the source link is kept.</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group relative">
+      <blockquote
+        className="border-l-2 pl-4 text-[15px] leading-relaxed text-slate-800"
+        style={{ borderColor: snippet.color || '#a5b4fc' }}
+      >
+        <p className="whitespace-pre-wrap">
+          {snippet.text || <span className="italic text-slate-400">(no text captured)</span>}
+        </p>
+      </blockquote>
+      <button
+        type="button"
+        onClick={() => {
+          setValue(snippet.text ?? '');
+          setEditing(true);
+        }}
+        className="mt-2 text-xs font-medium text-indigo-600 opacity-0 transition-opacity hover:underline focus:opacity-100 group-hover:opacity-100"
+      >
+        Edit text
+      </button>
+    </div>
+  );
+}
+
+/** Per-snippet note that travels with the snippet everywhere (NOTE-1). */
+function NoteEditor({ snippet, onSync }: { snippet: Snippet; onSync: () => void }) {
+  const [value, setValue] = useState(snippet.note ?? '');
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (document.activeElement !== ref.current) setValue(snippet.note ?? '');
+  }, [snippet.note]);
+
+  async function save() {
+    if ((snippet.note ?? '') === value) return;
+    await updateSnippet(snippet, { note: value.trim() || undefined });
+    onSync();
+  }
+
+  return (
+    <div className="mt-4">
+      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+        Note
+      </label>
+      <Textarea
+        ref={ref}
+        rows={2}
+        value={value}
+        placeholder="Add a personal note… it travels with this snippet everywhere."
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={() => void save()}
+        className="bg-amber-50/40"
+      />
+    </div>
+  );
+}
+
+/** Tag chips + add input (NOTE-2). Powers the library tag filter (LIB-4). */
+function TagEditor({ snippet, onSync }: { snippet: Snippet; onSync: () => void }) {
+  const { user } = useSession();
+  const tags = useSnippetTags(snippet.id);
+  const [value, setValue] = useState('');
+
+  async function add(name: string) {
+    if (!user || !name.trim()) return;
+    setValue('');
+    await addTagToSnippet(user.id, snippet.id, name);
+    onSync();
+  }
+  async function remove(tag: Tag) {
+    await removeTagFromSnippet(snippet.id, tag.id);
+    onSync();
+  }
+
+  return (
+    <div className="mt-4">
+      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+        Tags
+      </label>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {(tags ?? []).map((tag) => (
+          <span
+            key={tag.id}
+            className="inline-flex items-center gap-1 rounded-full bg-slate-100 py-0.5 pl-2.5 pr-1 text-xs font-medium text-slate-600"
+          >
+            {tag.name}
+            <button
+              type="button"
+              aria-label={`Remove tag ${tag.name}`}
+              onClick={() => void remove(tag)}
+              className="flex h-4 w-4 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200 hover:text-slate-700"
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        <Input
+          value={value}
+          placeholder={tags && tags.length ? 'Add tag…' : 'Add a tag…'}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ',') {
+              e.preventDefault();
+              void add(value);
+            }
+          }}
+          onBlur={() => void add(value)}
+          aria-label="Add tag"
+          className="h-7 w-32 px-2 py-0 text-xs"
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Recolor a snippet (NOTE-2). */
+function ColorPicker({ snippet, onSync }: { snippet: Snippet; onSync: () => void }) {
+  async function set(color: string | undefined) {
+    if (snippet.color === color) return;
+    await updateSnippet(snippet, { color });
+    onSync();
+  }
+  return (
+    <span className="inline-flex items-center gap-1">
+      {COLOR_PRESETS.map((color) => (
+        <button
+          key={color}
+          type="button"
+          aria-label={`Set color ${color}`}
+          aria-pressed={snippet.color === color}
+          onClick={() => void set(color)}
+          className={
+            snippet.color === color
+              ? 'h-4 w-4 rounded-full border border-slate-900 ring-2 ring-slate-300'
+              : 'h-4 w-4 rounded-full border border-slate-200'
+          }
+          style={{ backgroundColor: color }}
+        />
+      ))}
+      {snippet.color && (
+        <button
+          type="button"
+          onClick={() => void set(undefined)}
+          className="ml-0.5 text-[11px] text-slate-400 hover:text-slate-600 hover:underline"
+        >
+          clear
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** "Where is this used" — the documents that reference this snippet (DOC-8). */
+function WhereUsed({ snippetId }: { snippetId: string }) {
+  const docs = useDocumentsForSnippet(snippetId);
+  if (!docs || docs.length === 0) return null;
+  return (
+    <div className="mt-6">
+      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+        In {docs.length} {docs.length === 1 ? 'document' : 'documents'}
+      </h2>
+      <div className="flex flex-wrap gap-2">
+        {docs.map((doc) => (
+          <Link
+            key={doc.id}
+            href={`/documents/${doc.id}`}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 transition-colors hover:border-indigo-300 hover:bg-indigo-50/40"
+          >
+            <span className="h-3.5 w-3.5 rounded-sm bg-indigo-500" aria-hidden="true" />
+            {doc.title || 'Untitled'}
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }

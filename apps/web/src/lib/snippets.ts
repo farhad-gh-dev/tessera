@@ -1,4 +1,4 @@
-import type { Snippet, SnippetType } from '@tessera/core';
+import type { Snippet, SnippetType, Tag } from '@tessera/core';
 
 /* -------------------------------------------------------------------------- */
 /* Grouping (derived "websites" and "pages" — PRD §5, LIB-1/LIB-2)            */
@@ -77,12 +77,14 @@ export function groupByPage(snippets: Snippet[]): PageGroup[] {
 /* Search, filter, sort (LIB-3 / LIB-4 / LIB-7)                               */
 /* -------------------------------------------------------------------------- */
 
-export type SnippetSort = 'newest' | 'oldest';
+export type SnippetSort = 'newest' | 'oldest' | 'most_referenced';
 
 export interface SnippetFilters {
   query: string;
   types: SnippetType[];
   colors: string[];
+  /** Selected tag ids (LIB-4). A snippet matches if it carries any of them. */
+  tags: string[];
   /** Inclusive ISO date bounds (yyyy-mm-dd), or empty. */
   from: string;
   to: string;
@@ -92,6 +94,7 @@ export const EMPTY_FILTERS: SnippetFilters = {
   query: '',
   types: [],
   colors: [],
+  tags: [],
   from: '',
   to: '',
 };
@@ -101,6 +104,7 @@ export function hasActiveFilters(f: SnippetFilters): boolean {
     f.query.trim() !== '' ||
     f.types.length > 0 ||
     f.colors.length > 0 ||
+    f.tags.length > 0 ||
     f.from !== '' ||
     f.to !== ''
   );
@@ -117,14 +121,23 @@ export function matchesQuery(s: Snippet, query: string): boolean {
   return haystack.includes(q);
 }
 
-export function filterSnippets(snippets: Snippet[], f: SnippetFilters): Snippet[] {
+export function filterSnippets(
+  snippets: Snippet[],
+  f: SnippetFilters,
+  tagsBySnippet?: Map<string, Tag[]>,
+): Snippet[] {
   const typeSet = new Set(f.types);
   const colorSet = new Set(f.colors);
+  const tagSet = new Set(f.tags);
   // `to` is inclusive of the whole day.
   const toBound = f.to ? `${f.to}T23:59:59.999Z` : '';
   return snippets.filter((s) => {
     if (typeSet.size > 0 && !typeSet.has(s.type)) return false;
     if (colorSet.size > 0 && !(s.color && colorSet.has(s.color))) return false;
+    if (tagSet.size > 0) {
+      const snipTags = tagsBySnippet?.get(s.id);
+      if (!snipTags || !snipTags.some((t) => tagSet.has(t.id))) return false;
+    }
     if (f.from && s.createdAt < f.from) return false;
     if (toBound && s.createdAt > toBound) return false;
     if (!matchesQuery(s, f.query)) return false;
@@ -132,13 +145,21 @@ export function filterSnippets(snippets: Snippet[], f: SnippetFilters): Snippet[
   });
 }
 
-export function sortSnippets(snippets: Snippet[], sort: SnippetSort): Snippet[] {
+export function sortSnippets(
+  snippets: Snippet[],
+  sort: SnippetSort,
+  refCounts?: Map<string, number>,
+): Snippet[] {
   const copy = [...snippets];
-  copy.sort((a, b) =>
-    sort === 'newest'
-      ? b.createdAt.localeCompare(a.createdAt)
-      : a.createdAt.localeCompare(b.createdAt),
-  );
+  copy.sort((a, b) => {
+    if (sort === 'oldest') return a.createdAt.localeCompare(b.createdAt);
+    if (sort === 'most_referenced') {
+      const diff = (refCounts?.get(b.id) ?? 0) - (refCounts?.get(a.id) ?? 0);
+      if (diff !== 0) return diff;
+      return b.createdAt.localeCompare(a.createdAt);
+    }
+    return b.createdAt.localeCompare(a.createdAt); // newest
+  });
   return copy;
 }
 

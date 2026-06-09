@@ -7,6 +7,7 @@ import {
   SyncEngine,
   TesseraDexie,
   localDelete,
+  localUpsert,
 } from '@tessera/db';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
@@ -35,13 +36,32 @@ export function getStore(): DexieLocalStore {
   return store;
 }
 
-/** Build a sync engine over the given authenticated client. M2 syncs snippets. */
+/**
+ * Build a sync engine over the given authenticated client. Tables are listed
+ * parent-first so a push lands referenced rows before their referrers (e.g.
+ * `documents` before `document_items`), satisfying the cross-table foreign keys.
+ */
 export function createEngine(supabase: SupabaseClient): SyncEngine {
   return new SyncEngine({
     local: getStore(),
     remote: new SupabaseRemoteAdapter(supabase),
-    tables: ['snippets'],
+    tables: ['snippets', 'tags', 'documents', 'snippet_tags', 'document_items'],
   });
+}
+
+/**
+ * Patch a snippet locally and queue it for sync (NOTE-1/2/3 — note, color, tags
+ * live in joins, and light text edits). Editing the captured `text` sets the
+ * `edited` flag so the platform can show the passage was hand-corrected while the
+ * source link stays intact. The caller triggers a sync afterwards.
+ */
+export async function updateSnippet(
+  snippet: Snippet,
+  patch: Partial<Pick<Snippet, 'text' | 'note' | 'color'>>,
+): Promise<void> {
+  const next: Snippet = { ...snippet, ...patch };
+  if (patch.text !== undefined && patch.text !== snippet.text) next.edited = true;
+  await localUpsert(getStore(), 'snippets', next);
 }
 
 /**
