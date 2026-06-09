@@ -3,12 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import type { DocumentItem, Snippet } from '@tessera/core';
+import type { Document, DocumentItem, Snippet } from '@tessera/core';
 import { useSession } from '@/components/providers';
 import { Button, Spinner } from '@/components/ui';
 import { DocumentItemRow } from '@/components/documents/document-item-row';
 import { SnippetPickerDialog } from '@/components/documents/snippet-picker-dialog';
 import { useDocument, useDocumentItems, useSnippets } from '@/lib/hooks';
+import { downloadDocumentMarkdown } from '@/lib/export';
 import {
   addBlock,
   deleteDocument,
@@ -46,7 +47,8 @@ export function DocumentEditor({ id }: { id: string }) {
 
   const existingSnippetIds = useMemo(() => {
     const set = new Set<string>();
-    for (const i of items ?? []) if (i.kind === 'snippet_ref' && i.snippetId) set.add(i.snippetId);
+    for (const i of items ?? [])
+      if (i.kind === 'snippet_ref' && i.snippetId) set.add(i.snippetId);
     return set;
   }, [items]);
 
@@ -61,8 +63,13 @@ export function DocumentEditor({ id }: { id: string }) {
   if (doc === null) {
     return (
       <div className="py-24 text-center">
-        <p className="text-sm text-slate-500">This document doesn’t exist or was deleted.</p>
-        <Link href="/documents" className="mt-2 inline-block text-sm font-medium text-indigo-600 hover:underline">
+        <p className="text-sm text-slate-500">
+          This document doesn’t exist or was deleted.
+        </p>
+        <Link
+          href="/documents"
+          className="mt-2 inline-block text-sm font-medium text-indigo-600 hover:underline"
+        >
           Back to documents
         </Link>
       </div>
@@ -111,21 +118,35 @@ export function DocumentEditor({ id }: { id: string }) {
         <span aria-hidden="true">←</span> Documents
       </Link>
 
-      <DocumentHeader doc={doc} onSave={(patch) => void updateDocument(doc, patch).then(sync)} />
+      <DocumentHeader
+        doc={doc}
+        onSave={(patch) => void updateDocument(doc, patch).then(sync)}
+      />
 
       <div className="mt-4 flex flex-wrap items-center gap-2 border-y border-slate-100 py-3">
         <Button size="sm" variant="primary" onClick={() => setPicking(true)}>
           + Add snippets
         </Button>
-        <Button size="sm" variant="secondary" onClick={() => void handleAddBlock('heading')}>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => void handleAddBlock('heading')}
+        >
           + Heading
         </Button>
-        <Button size="sm" variant="secondary" onClick={() => void handleAddBlock('text_block')}>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => void handleAddBlock('text_block')}
+        >
           + Note
         </Button>
-        <span className="ml-auto text-xs text-slate-400">
-          {items.length} {items.length === 1 ? 'item' : 'items'}
-        </span>
+        <div className="ml-auto flex items-center gap-3">
+          <span className="text-xs text-slate-400">
+            {items.length} {items.length === 1 ? 'item' : 'items'}
+          </span>
+          <ExportMenu id={id} doc={doc} items={items} snippetsById={snippetsById} />
+        </div>
       </div>
 
       {items.length === 0 ? (
@@ -167,8 +188,14 @@ export function DocumentEditor({ id }: { id: string }) {
       <div className="mt-10 border-t border-slate-100 pt-4">
         {confirmingDelete ? (
           <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-600">Delete this document? Snippets are kept.</span>
-            <Button size="sm" variant="danger" onClick={() => void handleDeleteDocument()}>
+            <span className="text-sm text-slate-600">
+              Delete this document? Snippets are kept.
+            </span>
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => void handleDeleteDocument()}
+            >
               Delete
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setConfirmingDelete(false)}>
@@ -252,6 +279,89 @@ function DocumentHeader({
         aria-label="Document description"
         className="mt-1 w-full resize-none rounded bg-transparent text-sm text-slate-500 placeholder:text-slate-300 focus:bg-slate-50 focus:outline-none"
       />
+    </div>
+  );
+}
+
+/**
+ * Export the document (PRD §7.6). A lean dropdown: Markdown downloads a `.md`
+ * file (EXP-1); "PDF / Print" opens the chrome-free print view (EXP-2) in a new
+ * tab, where the browser's "Save as PDF" does the rest. Closes on outside click,
+ * Escape, or selection.
+ */
+function ExportMenu({
+  id,
+  doc,
+  items,
+  snippetsById,
+}: {
+  id: string;
+  doc: Document;
+  items: DocumentItem[];
+  snippetsById: Map<string, Snippet>;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('mousedown', onPointer);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onPointer);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const itemClass =
+    'block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 focus-visible:bg-slate-50 focus-visible:outline-none';
+
+  return (
+    <div ref={ref} className="relative">
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        Export <span aria-hidden="true">▾</span>
+      </Button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 z-20 mt-1 w-44 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className={itemClass}
+            onClick={() => {
+              downloadDocumentMarkdown(doc, items, snippetsById);
+              setOpen(false);
+            }}
+          >
+            Markdown (.md)
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={itemClass}
+            onClick={() => {
+              window.open(`/documents/${id}/print`, '_blank', 'noopener');
+              setOpen(false);
+            }}
+          >
+            PDF / Print
+          </button>
+        </div>
+      )}
     </div>
   );
 }

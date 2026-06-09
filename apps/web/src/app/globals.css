@@ -10,3 +10,18 @@
     @apply bg-slate-50 text-slate-900 antialiased;
   }
 }
+
+/* Print / "Save as PDF" — used by the document print view (EXP-2). */
+@media print {
+  @page {
+    margin: 1.6cm;
+  }
+  body {
+    background: #fff;
+  }
+  /* Render borders/backgrounds (e.g. the quote rule, favicons) on paper. */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

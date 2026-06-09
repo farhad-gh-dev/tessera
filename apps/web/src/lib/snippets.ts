@@ -1,4 +1,9 @@
-import type { Snippet, SnippetType, Tag } from '@tessera/core';
+import {
+  buildTextFragmentUrl,
+  type Snippet,
+  type SnippetType,
+  type Tag,
+} from '@tessera/core';
 
 /* -------------------------------------------------------------------------- */
 /* Grouping (derived "websites" and "pages" — PRD §5, LIB-1/LIB-2)            */
@@ -62,7 +67,8 @@ export function groupByPage(snippets: Snippet[]): PageGroup[] {
       existing.count += 1;
       existing.snippets.push(s);
       if (!existing.faviconUrl && s.faviconUrl) existing.faviconUrl = s.faviconUrl;
-      if (s.pageTitle && existing.pageTitle === existing.url) existing.pageTitle = s.pageTitle;
+      if (s.pageTitle && existing.pageTitle === existing.url)
+        existing.pageTitle = s.pageTitle;
       if (s.createdAt > existing.latestAt) existing.latestAt = s.createdAt;
     }
   }
@@ -175,34 +181,14 @@ export function distinctColors(snippets: Snippet[]): string[] {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Build a deep link back to a snippet's source. For text snippets we append a
- * native `#:~:text=` Text Fragment built from the saved anchor quote, so the
- * browser scrolls to and highlights the passage on its own — and the extension
- * re-highlights on top if it's installed. Falls back to the bare URL.
+ * Build a deep link back to a snippet's source — a native `#:~:text=` Text
+ * Fragment from the saved anchor quote so the browser scrolls to and highlights
+ * the passage on its own (the extension re-highlights on top if installed).
+ * Thin wrapper over {@link buildTextFragmentUrl} in `@tessera/core`, shared with
+ * Markdown export (EXP-3) so "open source" and exported citations stay in sync.
  */
 export function buildSourceUrl(s: Snippet): string {
-  const exact = s.anchor?.quote?.exact?.trim();
-  if (!exact) return s.url;
-  try {
-    const base = new URL(s.url);
-    base.hash = '';
-    return `${base.href}#:~:text=${encodeTextFragment(exact)}`;
-  } catch {
-    return s.url;
-  }
-}
-
-function encodeTextFragment(exact: string): string {
-  // Hyphens delimit prefix-/-suffix in the spec, and commas delimit
-  // textStart,textEnd — percent-encode both so they're treated literally.
-  const enc = (part: string) =>
-    encodeURIComponent(part).replace(/-/g, '%2D').replace(/,/g, '%2C');
-  const words = exact.split(/\s+/);
-  // Long quotes become a textStart,textEnd range to keep the URL sane and robust.
-  if (exact.length <= 100 || words.length <= 6) return enc(exact);
-  const start = words.slice(0, 5).join(' ');
-  const end = words.slice(-5).join(' ');
-  return `${enc(start)},${enc(end)}`;
+  return buildTextFragmentUrl(s.url, s.anchor);
 }
 
 /* -------------------------------------------------------------------------- */
