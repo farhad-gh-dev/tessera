@@ -1,17 +1,52 @@
-import { useEffect, useRef } from 'react';
-import { hydrateInlineImages } from '@tessera/core';
+import { useEffect, useMemo, useState } from 'react';
+import { applyInlineImageUrls, inlineImagePaths } from '@tessera/core';
 import type { Snippet } from '@tessera/core';
 import { supabase } from '../lib/supabase';
 
 const SIGN_TTL_SECONDS = 3600;
 
-/** Sign a `snippet-images` object for display (null if unavailable). */
-function signInlineImage(path: string): Promise<string | null> {
-  if (!supabase) return Promise.resolve(null);
-  return supabase.storage
-    .from('snippet-images')
-    .createSignedUrl(path, SIGN_TTL_SECONDS)
-    .then(({ data }) => data?.signedUrl ?? null);
+/**
+ * Resolve a passage's inline-image Storage paths to signed URLs and fold them
+ * into the html. State-driven on purpose: the resolved `src` ends up in the
+ * React-owned markup, so it survives re-renders (e.g. the panel re-reading on
+ * focus) instead of being wiped like an imperatively-set property.
+ */
+function useResolvedHtml(html: string): string {
+  const [urls, setUrls] = useState<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    const client = supabase;
+    if (!html || !client) return;
+    const paths = inlineImagePaths(html);
+    if (paths.length === 0) return;
+    let active = true;
+    void Promise.all(
+      paths.map(async (path) => {
+        const { data } = await client.storage
+          .from('snippet-images')
+          .createSignedUrl(path, SIGN_TTL_SECONDS);
+        return [path, data?.signedUrl ?? null] as const;
+      }),
+    ).then((entries) => {
+      if (!active) return;
+      setUrls((prev) => {
+        const next = new Map(prev);
+        let changed = false;
+        for (const [path, signed] of entries) {
+          if (signed && next.get(path) !== signed) {
+            next.set(path, signed);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [html]);
+
+  return useMemo(() => (html ? applyInlineImageUrls(html, urls) : html), [html, urls]);
 }
 
 /**
@@ -23,9 +58,9 @@ function signInlineImage(path: string): Promise<string | null> {
  *
  * SECURITY: `html` is written only by `serializeSelection` in `@tessera/core`, an
  * allowlist serializer that emits a fixed tag set and copies **no** page
- * attributes — so the injected markup carries no scripts, handlers, URLs, or
- * styles. Inline images are attribute-free tokens; we resolve them to short-lived
- * signed URLs and set `src` as a DOM property after injection (never a page URL).
+ * attributes — so the injected markup carries no scripts, handlers, page URLs, or
+ * styles. Inline-image tokens resolve to app-minted, HTML-escaped Storage signed
+ * URLs (`applyInlineImageUrls`); no page-supplied URL ever reaches the sink.
  */
 export function RichText({
   snippet,
@@ -34,22 +69,12 @@ export function RichText({
   snippet: Pick<Snippet, 'html' | 'text'>;
   className?: string;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
   const html = snippet.html && snippet.html.trim() ? snippet.html : '';
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || !html) return;
-    return hydrateInlineImages(el, signInlineImage);
-  }, [html]);
+  const resolved = useResolvedHtml(html);
 
   if (html) {
     return (
-      <div
-        ref={ref}
-        className={`tsr-rich ${className}`}
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
+      <div className={`tsr-rich ${className}`} dangerouslySetInnerHTML={{ __html: resolved }} />
     );
   }
   return <p className={`whitespace-pre-wrap break-words ${className}`}>{snippet.text}</p>;

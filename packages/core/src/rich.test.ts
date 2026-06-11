@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import { inlineImagePaths, serializeSelection } from './rich.js';
+import { applyInlineImageUrls, inlineImagePaths, serializeSelection } from './rich.js';
 
 /** Build a fragment the way `Range.cloneContents()` would, then serialize it. */
 function serialize(html: string): { html: string; text: string } {
@@ -123,5 +123,19 @@ describe('serializeSelection', () => {
     expect(inlineImagePaths('')).toEqual([]);
     expect(inlineImagePaths(undefined)).toEqual([]);
     expect(inlineImagePaths('<p>no images</p>')).toEqual([]);
+  });
+
+  it('applyInlineImageUrls injects resolved (escaped) URLs and skeletons for the rest', () => {
+    const html = '<p>a</p><img data-tsr-img="u1/s1/0.png"><img data-tsr-img="1">';
+    const out = applyInlineImageUrls(html, new Map([['u1/s1/0.png', 'https://x.test/sign?t=a&b=c']]));
+    expect(out).toContain('<img src="https://x.test/sign?t=a&amp;b=c"'); // resolved + escaped
+    expect(out).toContain('tsr-inline-pending'); // the numeric (still-uploading) token
+    expect(out).not.toContain('data-tsr-img'); // every token consumed
+  });
+
+  it('applyInlineImageUrls leaves a path as a skeleton until its URL resolves', () => {
+    const out = applyInlineImageUrls('<img data-tsr-img="u1/s1/0.png">', new Map());
+    expect(out).toContain('tsr-inline-pending');
+    expect(out).not.toContain('<img');
   });
 });

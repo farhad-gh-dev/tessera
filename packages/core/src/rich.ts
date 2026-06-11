@@ -248,40 +248,38 @@ function normalizeText(text: string): string {
 export const INLINE_IMG_ATTR = 'data-tsr-img';
 
 /**
- * Resolve the inline-image tokens in already-rendered `html` to displayable
- * images. Tokens are emitted attribute-free (`<img data-tsr-img="N">`, IMG-5);
- * the background later rewrites each `N` to a `snippet-images` Storage path. This
- * walks a rendered container, sizes every token, shows a skeleton for any still
- * uploading (a numeric ref), and signs the rest via the caller's `signUrl` —
- * setting `src` as a DOM **property** so no URL is ever injected as markup.
+ * Substitute resolved signed URLs into a passage's inline-image tokens, returning
+ * html ready to inject. Each `<img data-tsr-img="PATH">` becomes an `<img src>`
+ * once its PATH resolves (the URL is HTML-escaped — it is an app-minted Storage
+ * signed URL, never page content); a still-uploading (numeric) token or an
+ * as-yet-unsigned path renders a sized skeleton placeholder.
  *
- * Returns a teardown that cancels in-flight sign-ins (call it from a React effect
- * cleanup). `signUrl` is caller-supplied because each surface has its own
- * Supabase client.
+ * State-driven by design: the resolved `src` lives in the React-owned markup
+ * rather than being set imperatively, so it survives re-renders and re-signs
+ * cleanly once the caller's session is ready. The surrounding structural markup
+ * is already serializer-sanitized (IMG-5), and the only URLs introduced here are
+ * ones the app minted from its own Storage — no page-supplied URL is ever
+ * injected.
  */
-export function hydrateInlineImages(
-  container: ParentNode,
-  signUrl: (storagePath: string) => Promise<string | null>,
-): () => void {
-  let active = true;
-  container.querySelectorAll<HTMLImageElement>(`img[${INLINE_IMG_ATTR}]`).forEach((img) => {
-    const ref = img.getAttribute(INLINE_IMG_ATTR) ?? '';
-    img.style.maxWidth = '100%';
-    img.style.height = 'auto';
-    if (/^\d+$/.test(ref)) {
-      // Pending upload (IMG-6): a minimal skeleton, no network request.
-      img.style.minHeight = '1.5rem';
-      img.style.borderRadius = '6px';
-      img.style.background = 'rgba(148,163,184,0.15)';
-      return;
-    }
-    void signUrl(ref).then((url) => {
-      if (active && url) img.src = url;
-    });
-  });
-  return () => {
-    active = false;
-  };
+export function applyInlineImageUrls(html: string, urls: Map<string, string>): string {
+  return html.replace(
+    new RegExp(`<img ${INLINE_IMG_ATTR}="([^"]+)">`, 'g'),
+    (_match, ref: string) => {
+      const url = /^\d+$/.test(ref) ? undefined : urls.get(ref);
+      if (url) {
+        return `<img src="${escapeAttr(url)}" alt="" loading="lazy" style="max-width:100%;height:auto;border-radius:6px" />`;
+      }
+      return `<span class="tsr-inline-pending" style="display:block;min-height:1.5rem;border-radius:6px;background:rgba(148,163,184,0.15)"></span>`;
+    },
+  );
+}
+
+function escapeAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 /**
