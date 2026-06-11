@@ -3,18 +3,16 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import type { Snippet, Tag } from '@tessera/core';
+import { HIGHLIGHT_COLORS, type Snippet, type Tag } from '@tessera/core';
 import { useSession } from '@/components/providers';
 import { Badge, Button, Card, Input, Spinner, Textarea } from '@/components/ui';
 import { Favicon, SnippetImage } from '@/components/library/media';
+import { RichText } from '@/components/library/rich-text';
 import { AddToDocumentDialog } from '@/components/documents/add-to-document-dialog';
 import { useDocumentsForSnippet, useSnippet, useSnippetTags } from '@/lib/hooks';
 import { deleteSnippet, updateSnippet } from '@/lib/db';
 import { addTagToSnippet, removeTagFromSnippet } from '@/lib/tags';
 import { buildSourceUrl, formatDate, typeLabel } from '@/lib/snippets';
-
-/** Preset highlight colors offered by the color picker (NOTE-2). */
-const COLOR_PRESETS = ['#fde68a', '#a7f3d0', '#bfdbfe', '#fbcfe8', '#ddd6fe', '#fca5a5'];
 
 /** Full snippet view (LIB-5) with deep link (LIB-6), editing (NOTE-1..3) and documents. */
 export function SnippetDetail({ id }: { id: string }) {
@@ -135,7 +133,9 @@ function TextBody({ snippet, onSync }: { snippet: Snippet; onSync: () => void })
   const [value, setValue] = useState(snippet.text ?? '');
 
   async function save() {
-    await updateSnippet(snippet, { text: value });
+    // Clear the captured structural html so the hand-edited plain text becomes
+    // the source of truth (re-display falls back to `text`); sets `edited`.
+    await updateSnippet(snippet, { text: value, html: '' });
     onSync();
     setEditing(false);
   }
@@ -176,9 +176,7 @@ function TextBody({ snippet, onSync }: { snippet: Snippet; onSync: () => void })
         className="border-l-2 pl-4 text-[15px] leading-relaxed text-slate-800"
         style={{ borderColor: snippet.color || '#a5b4fc' }}
       >
-        <p className="whitespace-pre-wrap">
-          {snippet.text || <span className="italic text-slate-400">(no text captured)</span>}
-        </p>
+        <RichText snippet={snippet} emptyLabel="(no text captured)" />
       </blockquote>
       <button
         type="button"
@@ -294,19 +292,19 @@ function ColorPicker({ snippet, onSync }: { snippet: Snippet; onSync: () => void
   }
   return (
     <span className="inline-flex items-center gap-1">
-      {COLOR_PRESETS.map((color) => (
+      {HIGHLIGHT_COLORS.map((c) => (
         <button
-          key={color}
+          key={c.token}
           type="button"
-          aria-label={`Set color ${color}`}
-          aria-pressed={snippet.color === color}
-          onClick={() => void set(color)}
+          aria-label={`Set color ${c.label}`}
+          aria-pressed={snippet.color === c.hex}
+          onClick={() => void set(c.hex)}
           className={
-            snippet.color === color
+            snippet.color === c.hex
               ? 'h-4 w-4 rounded-full border border-slate-900 ring-2 ring-slate-300'
               : 'h-4 w-4 rounded-full border border-slate-200'
           }
-          style={{ backgroundColor: color }}
+          style={{ backgroundColor: c.hex }}
         />
       ))}
       {snippet.color && (

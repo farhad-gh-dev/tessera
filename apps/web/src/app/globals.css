@@ -11,6 +11,82 @@
   }
 }
 
+@layer components {
+  /* Rich captured-passage rendering (RichText) — faithful structure for saved
+     highlights: headings, paragraphs, lists, quotes, code, emphasis. Tailwind
+     preflight strips these defaults, so restore them. The HTML is sanitized at
+     capture time (serializeSelection) and never carries attributes. */
+  .tsr-rich > :first-child {
+    margin-top: 0;
+  }
+  .tsr-rich > :last-child {
+    margin-bottom: 0;
+  }
+  .tsr-rich h1,
+  .tsr-rich h2,
+  .tsr-rich h3,
+  .tsr-rich h4,
+  .tsr-rich h5,
+  .tsr-rich h6 {
+    @apply mb-1 mt-3 font-semibold leading-snug text-slate-900;
+  }
+  .tsr-rich h1 {
+    font-size: 1.15em;
+  }
+  .tsr-rich h2 {
+    font-size: 1.08em;
+  }
+  .tsr-rich h3 {
+    font-size: 1.02em;
+  }
+  .tsr-rich h4,
+  .tsr-rich h5,
+  .tsr-rich h6 {
+    font-size: 1em;
+  }
+  .tsr-rich p {
+    @apply my-1.5;
+  }
+  .tsr-rich ul,
+  .tsr-rich ol {
+    @apply my-1.5 pl-5;
+  }
+  .tsr-rich ul {
+    @apply list-disc;
+  }
+  .tsr-rich ol {
+    @apply list-decimal;
+  }
+  .tsr-rich li {
+    @apply my-0.5;
+  }
+  .tsr-rich li > ul,
+  .tsr-rich li > ol {
+    @apply my-0.5;
+  }
+  .tsr-rich blockquote {
+    @apply my-2 border-l-2 border-slate-300 pl-3 italic text-slate-600;
+  }
+  .tsr-rich pre {
+    @apply my-2 overflow-x-auto whitespace-pre-wrap break-words rounded bg-slate-100 p-2 font-mono text-[0.92em];
+  }
+  .tsr-rich code {
+    @apply rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.92em];
+  }
+  .tsr-rich pre code {
+    @apply bg-transparent p-0;
+  }
+  .tsr-rich mark {
+    @apply rounded-sm bg-amber-100 px-0.5;
+  }
+  .tsr-rich strong {
+    @apply font-semibold;
+  }
+  .tsr-rich em {
+    @apply italic;
+  }
+}
+
 /* Print / "Save as PDF" — used by the document print view (EXP-2). */
 @media print {
   @page {

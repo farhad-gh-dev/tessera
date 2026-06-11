@@ -1,10 +1,22 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { Snippet } from '@tessera/core';
+import { AuthScreen } from '../shared/auth';
+import { Wordmark } from '../shared/brand';
+import { RichText } from '../shared/rich-text';
+import {
+  deleteSnippet as requestDelete,
+  getAuthState,
+  signOut as requestSignOut,
+  type User,
+} from '../shared/messages';
 
-interface User {
-  id: string;
-  email?: string;
-}
+const env = import.meta.env as Record<string, string | undefined>;
+const PLATFORM_URL = env.VITE_WEB_URL ?? 'http://localhost:3001';
+
+// The side panel needs Chrome 116+ (`sidePanel.open`); hide the doorway otherwise (OPN-4).
+const sidePanelSupported =
+  typeof chrome !== 'undefined' && typeof chrome.sidePanel?.open === 'function';
+const HINT_KEY = 'tessera:panel-hint-dismissed';
 
 export function App() {
   const [loading, setLoading] = useState(true);
@@ -12,13 +24,13 @@ export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [total, setTotal] = useState(0);
-
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [unresolved, setUnresolved] = useState(0);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+
+  // Cache the window id on load so opening the panel stays inside the click
+  // gesture — calling sidePanel.open() after an await would drop it (OPN-2, §9).
+  const [windowId, setWindowId] = useState<number | null>(null);
+  const [showHint, setShowHint] = useState(false);
 
   const loadSnippets = useCallback(async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -26,15 +38,28 @@ export function App() {
       type: 'tessera:get-snippets',
       url: tab?.url ?? '',
     })) as { snippets?: Snippet[]; total?: number } | undefined;
-    setSnippets(response?.snippets ?? []);
+    const list = response?.snippets ?? [];
+    setSnippets(list);
     setTotal(response?.total ?? 0);
+    // Best-effort: ask the page's content script how many of these re-located (ANC-4).
+    let missing = 0;
+    if (tab?.id != null && list.length > 0) {
+      try {
+        const status = (await chrome.tabs.sendMessage(tab.id, {
+          type: 'tessera:get-status',
+        })) as { resolved?: number } | undefined;
+        if (typeof status?.resolved === 'number') {
+          missing = Math.max(0, list.length - status.resolved);
+        }
+      } catch {
+        // no content script on this page (e.g. opened before install); skip the hint
+      }
+    }
+    setUnresolved(missing);
   }, []);
 
   const refresh = useCallback(async () => {
-    const state = (await chrome.runtime.sendMessage({ type: 'auth:get-state' })) as {
-      configured: boolean;
-      user: User | null;
-    };
+    const state = await getAuthState();
     setConfigured(state.configured);
     setUser(state.user);
     if (state.user) await loadSnippets();
@@ -45,32 +70,37 @@ export function App() {
     void refresh();
   }, [refresh]);
 
-  async function authenticate(type: 'auth:sign-in' | 'auth:sign-up') {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    const response = (await chrome.runtime.sendMessage({ type, email, password })) as {
-      user?: User | null;
-      error?: string;
-      needsConfirmation?: boolean;
-    };
-    setBusy(false);
-    if (response.error) {
-      setError(response.error);
-    } else if (response.needsConfirmation) {
-      setNotice('Check your email to confirm, then sign in.');
-    } else if (response.user) {
-      setUser(response.user);
-      setPassword('');
-      await loadSnippets();
+  // Pre-fetch the window id and the "introduce the panel" hint state (NAV-4).
+  useEffect(() => {
+    if (!sidePanelSupported) return;
+    void chrome.windows.getCurrent().then((w) => setWindowId(w.id ?? null));
+    void chrome.storage.local.get(HINT_KEY).then((r) => setShowHint(!r[HINT_KEY]));
+  }, []);
+
+  function dismissHint() {
+    setShowHint(false);
+    void chrome.storage.local.set({ [HINT_KEY]: true });
+  }
+
+  function openSidePanel() {
+    dismissHint();
+    if (windowId != null) {
+      // Synchronous within the gesture — no await before this call (OPN-2).
+      void chrome.sidePanel.open({ windowId });
+      window.close(); // the popup closes on blur anyway
+    } else {
+      // Window id not cached yet (rare) — fall back to the web app rather than
+      // risk an await that would drop the user gesture (OPN-4 spirit).
+      void chrome.tabs.create({ url: PLATFORM_URL });
     }
   }
 
   async function signOut() {
-    await chrome.runtime.sendMessage({ type: 'auth:sign-out' });
+    await requestSignOut();
     setUser(null);
     setSnippets([]);
     setTotal(0);
+    setUnresolved(0);
   }
 
   async function startScreenshot() {
@@ -94,23 +124,19 @@ export function App() {
     // Optimistic: drop it from the list immediately, then persist + sync.
     setSnippets((prev) => prev.filter((snippet) => snippet.id !== id));
     setTotal((prev) => Math.max(0, prev - 1));
-    await chrome.runtime.sendMessage({ type: 'tessera:delete', id });
+    await requestDelete(id);
     // Best-effort: tell the page to re-paint so a deleted highlight disappears.
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id != null) {
-      void chrome.tabs
-        .sendMessage(tab.id, { type: 'tessera:refresh-highlights' })
-        .catch(() => {});
+      void chrome.tabs.sendMessage(tab.id, { type: 'tessera:refresh-highlights' }).catch(() => {});
     }
   }
 
   return (
-    <div className="w-80 p-4 font-sans text-slate-800">
+    <div className="w-96 p-4 font-sans text-slate-800">
+      {/* Zone A — account / header */}
       <header className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="h-6 w-6 rounded bg-indigo-600" />
-          <h1 className="text-lg font-semibold">Tessera</h1>
-        </div>
+        <Wordmark />
         {user && total > 0 && (
           <span
             className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700"
@@ -129,20 +155,12 @@ export function App() {
           <code>VITE_SUPABASE_ANON_KEY</code>, then rebuild.
         </p>
       ) : !user ? (
-        <>
-          <WelcomeIntro />
-          <SignInForm
-            email={email}
-            password={password}
-            busy={busy}
-            error={error}
-            notice={notice}
-            onEmail={setEmail}
-            onPassword={setPassword}
-            onSignIn={() => void authenticate('auth:sign-in')}
-            onSignUp={() => void authenticate('auth:sign-up')}
-          />
-        </>
+        <AuthScreen
+          onSignedIn={(u) => {
+            setUser(u);
+            void loadSnippets();
+          }}
+        />
       ) : (
         <>
           <div className="mb-3 flex items-center justify-between text-sm">
@@ -155,13 +173,47 @@ export function App() {
               Sign out
             </button>
           </div>
-          <button
-            type="button"
-            onClick={() => void startScreenshot()}
-            className="mb-3 w-full rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-100"
-          >
-            Capture screenshot region
-          </button>
+
+          {/* Zone B — actions & doorways (POP-2/POP-3): one compact row; the
+              side-panel doorway is promoted so it reads distinctly from the rest. */}
+          <section aria-label="Actions" className="mb-3">
+            <div className={`grid gap-2 ${sidePanelSupported ? 'grid-cols-3' : 'grid-cols-2'}`}>
+              <ActionTile
+                onClick={() => void startScreenshot()}
+                label="Screenshot"
+                title="Capture a screenshot region"
+                icon={<CaptureIcon />}
+              />
+              {sidePanelSupported && (
+                <ActionTile
+                  onClick={openSidePanel}
+                  label="Side panel"
+                  title="Open the side panel — browse your library while you read"
+                  icon={<PanelIcon />}
+                  primary
+                />
+              )}
+              <ActionTile
+                onClick={() => void chrome.tabs.create({ url: PLATFORM_URL })}
+                label="Library"
+                title="Open my library in a new tab"
+                icon={<ExternalIcon />}
+              />
+            </div>
+            {sidePanelSupported && showHint && (
+              <div className="mt-2">
+                <PanelHint onDismiss={dismissHint} />
+              </div>
+            )}
+          </section>
+
+          {/* Zone C — content (this page) */}
+          {unresolved > 0 && (
+            <p className="mb-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-700">
+              {unresolved} {unresolved === 1 ? 'highlight' : 'highlights'} saved here couldn’t be
+              re-located on this page.
+            </p>
+          )}
           {snippets.length === 0 ? (
             total === 0 ? (
               <GettingStarted />
@@ -188,83 +240,85 @@ export function App() {
   );
 }
 
-interface SignInFormProps {
-  email: string;
-  password: string;
-  busy: boolean;
-  error: string | null;
-  notice: string | null;
-  onEmail: (value: string) => void;
-  onPassword: (value: string) => void;
-  onSignIn: () => void;
-  onSignUp: () => void;
-}
-
-function SignInForm(props: SignInFormProps) {
-  const canSubmit = props.email.trim() !== '' && props.password !== '' && !props.busy;
+/** NAV-4: introduce the side panel once — it's easy to miss. Dismissal persists. */
+function PanelHint({ onDismiss }: { onDismiss: () => void }) {
   return (
-    <form
-      className="space-y-2"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (canSubmit) props.onSignIn();
-      }}
-    >
-      <input
-        type="email"
-        placeholder="Email"
-        autoComplete="email"
-        value={props.email}
-        onChange={(event) => props.onEmail(event.target.value)}
-        className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-      />
-      <input
-        type="password"
-        placeholder="Password"
-        autoComplete="current-password"
-        value={props.password}
-        onChange={(event) => props.onPassword(event.target.value)}
-        className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-      />
-      {props.error && <p className="text-sm text-red-600">{props.error}</p>}
-      {props.notice && <p className="text-sm text-emerald-600">{props.notice}</p>}
-      <div className="flex gap-2 pt-1">
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          className="flex-1 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-        >
-          Sign in
-        </button>
-        <button
-          type="button"
-          disabled={!canSubmit}
-          onClick={props.onSignUp}
-          className="flex-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-        >
-          Create account
-        </button>
-      </div>
-      <p className="pt-0.5 text-xs text-slate-400">
-        New here? Pick a password and choose{' '}
-        <span className="font-medium">Create account</span>.
+    <div className="flex items-start gap-2 rounded-md bg-indigo-50 px-2.5 py-2 text-xs text-indigo-700">
+      <p className="flex-1">
+        New: browse your whole library here while you read — it stays open as you switch tabs.
       </p>
-    </form>
+      <button
+        type="button"
+        aria-label="Dismiss"
+        title="Dismiss"
+        onClick={onDismiss}
+        className="shrink-0 rounded p-0.5 text-indigo-400 hover:bg-indigo-100 hover:text-indigo-700"
+      >
+        <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+          <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+        </svg>
+      </button>
+    </div>
   );
 }
 
-/** One-line value prop above the sign-in box so the first screen isn't a cold login. */
-function WelcomeIntro() {
+interface ActionTileProps {
+  onClick: () => void;
+  label: string;
+  title: string;
+  icon: ReactNode;
+  primary?: boolean;
+}
+
+/** One tile in the popup's action row: an icon over a short label (POP-2/3). */
+function ActionTile({ onClick, label, title, icon, primary }: ActionTileProps) {
+  const tone = primary
+    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+    : 'border border-slate-200 text-slate-600 hover:bg-slate-50';
   return (
-    <div className="mb-3">
-      <h2 className="text-sm font-semibold text-slate-800">
-        Save anything worth remembering
-      </h2>
-      <p className="mt-1 text-xs text-slate-500">
-        Highlight text, images, and screenshots from any page into one private, synced
-        library.
-      </p>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={`flex flex-col items-center justify-center gap-1.5 rounded-md px-1 py-2.5 text-xs font-medium ${tone}`}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function CaptureIcon() {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      className="h-5 w-5"
+      aria-hidden="true"
+    >
+      <path d="M3 7V5.5A2.5 2.5 0 0 1 5.5 3H7M13 3h1.5A2.5 2.5 0 0 1 17 5.5V7M17 13v1.5a2.5 2.5 0 0 1-2.5 2.5H13M7 17H5.5A2.5 2.5 0 0 1 3 14.5V13" />
+    </svg>
+  );
+}
+
+function PanelIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className="h-5 w-5" aria-hidden="true">
+      <rect x="2.5" y="3.5" width="15" height="13" rx="2" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M12.5 3.5v13" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function ExternalIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5" aria-hidden="true">
+      <path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z" />
+      <path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z" />
+    </svg>
   );
 }
 
@@ -273,8 +327,8 @@ function GettingStarted() {
   return (
     <div className="space-y-3">
       <p className="text-sm text-slate-600">
-        Welcome to Tessera. Capture anything worth remembering — it lands in your
-        synced library, grouped by site.
+        Welcome to Tessera. Capture anything worth remembering — it lands in your synced library,
+        grouped by site.
       </p>
       <ol className="space-y-2 text-sm text-slate-700">
         <li className="flex gap-2">
@@ -294,8 +348,8 @@ function GettingStarted() {
         <li className="flex gap-2">
           <StepBadge n={3} />
           <span>
-            Hit <span className="font-medium">Capture screenshot region</span> above to
-            clip part of the page.
+            Hit <span className="font-medium">Capture screenshot region</span> above to clip part of
+            the page.
           </span>
         </li>
       </ol>
@@ -312,11 +366,12 @@ function PageEmpty({ total }: { total: number }) {
     <div className="space-y-2">
       <p className="text-sm text-slate-600">Nothing saved on this page yet.</p>
       <p className="text-xs text-slate-500">
-        Highlight text and click <span className="font-medium">Save to Tessera</span>,
-        right-click an image, or capture a screenshot region above.
+        Highlight text and click <span className="font-medium">Save to Tessera</span>, right-click
+        an image, or capture a screenshot region above.
       </p>
       <p className="text-xs text-slate-400">
-        {total} {total === 1 ? 'item' : 'items'} in your library.
+        {total} {total === 1 ? 'item' : 'items'} in your library — open the side panel to browse
+        them all.
       </p>
     </div>
   );
@@ -344,13 +399,25 @@ function SnippetRow(props: SnippetRowProps) {
     <li className="group flex items-start gap-2 rounded-md border border-slate-200 p-2 text-sm text-slate-700">
       <div className="min-w-0 flex-1">
         {snippet.type === 'text' ? (
-          <p className="line-clamp-3">{snippet.text}</p>
+          <RichText snippet={snippet} className="line-clamp-3" />
         ) : (
           <p className="italic text-slate-500">
             {snippet.type === 'screenshot' ? 'Screenshot' : 'Image'}
           </p>
         )}
       </div>
+      <button
+        type="button"
+        aria-label="Open in Tessera"
+        title="Open in Tessera"
+        onClick={() => void chrome.tabs.create({ url: `${PLATFORM_URL}/snippet/${snippet.id}` })}
+        className="shrink-0 rounded p-0.5 text-slate-300 transition-colors hover:bg-indigo-50 hover:text-indigo-600 group-hover:text-slate-400"
+      >
+        <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+          <path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z" />
+          <path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z" />
+        </svg>
+      </button>
       {props.confirming ? (
         <div className="flex shrink-0 items-center gap-1">
           <button

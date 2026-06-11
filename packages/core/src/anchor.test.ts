@@ -67,6 +67,18 @@ describe('anchorFromRange', () => {
     const { start, end } = anchor.textPosition ?? { start: 0, end: 0 };
     expect(text.slice(start, end)).toBe('powerhouse');
   });
+
+  it('captures a stable #id container selector when one is present', () => {
+    const root = mount('<section id="intro"><p>The mitochondria is the powerhouse.</p></section>');
+    const anchor = anchorFromRange(rangeOver(root, 'powerhouse'), root);
+    expect(anchor.selector).toBe('#intro');
+  });
+
+  it('omits the selector when no ancestor carries a simple id', () => {
+    const root = mount(SENTENCE);
+    const anchor = anchorFromRange(rangeOver(root, 'powerhouse'), root);
+    expect(anchor.selector).toBeUndefined();
+  });
 });
 
 describe('resolveAnchor', () => {

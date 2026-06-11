@@ -51,7 +51,13 @@ export interface Snippet extends SyncFields {
   type: SnippetType;
   /** Selected text (for `text`; may be empty for image/screenshot). */
   text?: string;
-  /** Lightly-sanitized inline HTML preserving emphasis, if captured. */
+  /**
+   * Lightly-sanitized HTML preserving the passage's structure — headings,
+   * paragraphs, lists, blockquotes, line breaks, and inline emphasis. Produced
+   * solely by `serializeSelection` (an allowlist serializer that copies no
+   * attributes), so it is safe to render. Absent when the selection had no
+   * structure beyond plain text; re-display then falls back to {@link text}.
+   */
   html?: string;
   /** Storage path/key for a saved image or screenshot clip. */
   imagePath?: string;

@@ -46,7 +46,7 @@ export function anchorFromRange(range: Range, root: Element): SnippetAnchor {
   const full = textOf(root);
   const start = offsetWithin(root, range.startContainer, range.startOffset);
   const end = offsetWithin(root, range.endContainer, range.endOffset);
-  return {
+  const anchor: SnippetAnchor = {
     quote: {
       exact: full.slice(start, end),
       prefix: full.slice(Math.max(0, start - CONTEXT_LENGTH), start),
@@ -54,6 +54,10 @@ export function anchorFromRange(range: Range, root: Element): SnippetAnchor {
     },
     textPosition: { start, end },
   };
+  // Last-resort strategy: the nearest ancestor carrying a simple, stable id.
+  const selector = idSelectorWithin(range, root);
+  if (selector) anchor.selector = selector;
+  return anchor;
 }
 
 /**
@@ -174,6 +178,22 @@ function collectTextNodes(node: Node, out: Text[]): void {
     if (child.nodeType === 3 /* Node.TEXT_NODE */) out.push(child as Text);
     else collectTextNodes(child, out);
   }
+}
+
+/**
+ * A `#id` selector for the nearest ancestor element (up to and including `root`)
+ * carrying a simple, stable id — a coarse last-resort locator for when both the
+ * quote and text-position strategies miss. Omitted when no such id exists.
+ */
+function idSelectorWithin(range: Range, root: Element): string | undefined {
+  const start = range.commonAncestorContainer;
+  let el: Element | null = start.nodeType === 1 ? (start as Element) : start.parentElement;
+  while (el) {
+    if (el.id && /^[A-Za-z][\w-]*$/.test(el.id)) return `#${el.id}`;
+    if (el === root) break;
+    el = el.parentElement;
+  }
+  return undefined;
 }
 
 function ownerDocument(root: Element): Document {

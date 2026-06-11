@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { DocumentItem, Snippet } from '@tessera/core';
 import { cn } from '@/lib/cn';
 import { Favicon, SnippetImage } from '@/components/library/media';
+import { RichText } from '@/components/library/rich-text';
 import { buildSourceUrl } from '@/lib/snippets';
 
 export interface DocumentItemRowProps {
@@ -122,9 +123,11 @@ function SnippetRef({ snippet }: { snippet?: Snippet }) {
       )}
       <div className="min-w-0 flex-1">
         {isText && (
-          <p className="line-clamp-4 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
-            {snippet.text || <span className="italic text-slate-400">(no text)</span>}
-          </p>
+          <RichText
+            snippet={snippet}
+            className="line-clamp-4 text-sm leading-relaxed text-slate-700"
+            emptyLabel="(no text)"
+          />
         )}
         {snippet.note && (
           <p className="mt-1 line-clamp-2 text-xs text-amber-800">Note: {snippet.note}</p>

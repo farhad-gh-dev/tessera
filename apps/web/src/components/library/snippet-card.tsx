@@ -4,6 +4,7 @@ import Link from 'next/link';
 import type { Snippet } from '@tessera/core';
 import { Card } from '@/components/ui';
 import { Favicon, SnippetImage } from '@/components/library/media';
+import { RichText } from '@/components/library/rich-text';
 import { relativeTime, typeLabel } from '@/lib/snippets';
 
 /**
@@ -23,9 +24,11 @@ export function SnippetCard({ snippet, showSource = true }: { snippet: Snippet; 
               style={snippet.color ? { backgroundColor: snippet.color } : undefined}
               aria-hidden="true"
             />
-            <p className="line-clamp-5 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
-              {snippet.text || <span className="italic text-slate-400">(no text)</span>}
-            </p>
+            <RichText
+              snippet={snippet}
+              className="line-clamp-5 text-sm leading-relaxed text-slate-700"
+              emptyLabel="(no text)"
+            />
           </div>
         ) : (
           <div className="relative aspect-video w-full bg-slate-50">

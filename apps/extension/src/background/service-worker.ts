@@ -1,4 +1,4 @@
-import { domainOf, newId } from '@tessera/core';
+import { domainOf, inlineImagePaths, newId } from '@tessera/core';
 import type { Snippet, SnippetType } from '@tessera/core';
 import {
   DexieLocalStore,
@@ -9,7 +9,12 @@ import {
   localUpsert,
 } from '@tessera/db';
 import { supabase } from '../lib/supabase';
-import { removeSnippetImage, uploadSnippetImage } from '../lib/storage';
+import {
+  removeSnippetImage,
+  removeSnippetImages,
+  uploadInlineImage,
+  uploadSnippetImage,
+} from '../lib/storage';
 
 /**
  * Tessera background service worker (M1 — local store + cloud sync + auth).
@@ -61,9 +66,26 @@ async function sync(): Promise<void> {
   if (!engine || !currentUserId) return;
   try {
     await engine.syncOnce();
+    // A pull may have written rows; nudge any open pages to re-read (DATA-2).
+    notifyChanged();
   } catch (error) {
     console.error('[Tessera] sync failed', error);
   }
+}
+
+/**
+ * Tell the extension's *pages* (popup / side panel) that the local store
+ * changed, so their live reads re-query even if a Dexie change doesn't propagate
+ * across the service-worker↔page boundary — the §12.3 fallback for DATA-2.
+ * Best-effort: `sendMessage` rejects when no page is listening, which is normal.
+ */
+function notifyChanged(): void {
+  void chrome.runtime.sendMessage({ type: 'tessera:changed' }).catch(() => {});
+}
+
+/** Tell pages auth changed (sign-in/out, possibly in another surface) — DATA-1. */
+function notifyAuthChanged(): void {
+  void chrome.runtime.sendMessage({ type: 'tessera:auth-changed' }).catch(() => {});
 }
 
 /* ---- messaging ---------------------------------------------------------- */
@@ -79,6 +101,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
       chrome.tabs.sendMessage(tab.id, { type: 'tessera:save-from-menu' }),
     ).catch(() => {});
   }
+});
+
+// Keyboard command (Alt+Shift+H): tell the active tab's content script to save
+// the current selection — same path as the floating toolbar / context menu.
+chrome.commands.onCommand.addListener((command) => {
+  if (command !== 'save-selection') return;
+  void chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+    if (tab?.id != null) {
+      void chrome.tabs.sendMessage(tab.id, { type: 'tessera:save-from-menu' }).catch(() => {});
+    }
+  });
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -99,6 +132,9 @@ interface ScreenshotPayload {
 interface Message {
   type?: string;
   snippet?: Partial<Snippet>;
+  /** Resolved inline-image sources, in token order (`null` = drop) — IMG-3/4. */
+  images?: (string | null)[];
+  patch?: Partial<Snippet>;
   id?: string;
   url?: string;
   email?: string;
@@ -109,7 +145,7 @@ interface Message {
 async function handleMessage(message: Message): Promise<unknown> {
   switch (message.type) {
     case 'tessera:capture':
-      return { id: await capture(message.snippet ?? {}) };
+      return { id: await capture(message.snippet ?? {}, message.images) };
     case 'tessera:get-snippets':
       return {
         snippets: await liveSnippetsForUrl(message.url ?? ''),
@@ -120,6 +156,8 @@ async function handleMessage(message: Message): Promise<unknown> {
     case 'tessera:delete':
       await deleteSnippet(message.id ?? '');
       return { ok: true };
+    case 'tessera:update':
+      return updateSnippet(message.id ?? '', message.patch ?? {});
     case 'auth:get-state':
       return authState();
     case 'auth:sign-in':
@@ -135,14 +173,21 @@ async function handleMessage(message: Message): Promise<unknown> {
 
 /* ---- text capture + query ----------------------------------------------- */
 
-async function capture(input: Partial<Snippet>): Promise<string> {
+async function capture(input: Partial<Snippet>, images?: (string | null)[]): Promise<string> {
   const now = new Date().toISOString();
+  const signedIn = Boolean(supabase && currentUserId);
+  // Inline images must be copied into cloud Storage (IMG-4, §10.2-A). Signed out
+  // we can't, so strip the tokens rather than persist unresolved placeholders.
+  let html = input.html;
+  if (html && hasInlineTokens(html) && !signedIn) {
+    html = stripImageTokens(html) || undefined;
+  }
   const snippet: Snippet = {
     id: newId(),
     userId: currentUserId ?? 'local',
     type: input.type ?? 'text',
     text: input.text,
-    html: input.html,
+    html,
     imagePath: input.imagePath,
     url: input.url ?? '',
     domain: input.domain ?? '',
@@ -156,7 +201,68 @@ async function capture(input: Partial<Snippet>): Promise<string> {
   };
   await localUpsert(store, 'snippets', snippet);
   void sync(); // push right away if signed in
+  notifyChanged();
+  // Fetch + upload inline images in the background, then patch the html (IMG-6) —
+  // the optimistic snippet above is already saved, so the save never blocks on I/O.
+  if (signedIn && images?.length && snippet.html && hasInlineTokens(snippet.html)) {
+    void attachInlineImages(snippet.id, images);
+  }
   return snippet.id;
+}
+
+const INLINE_TOKEN_RE = /<img data-tsr-img="(\d+)">/g;
+
+function hasInlineTokens(html: string): boolean {
+  return /<img data-tsr-img="\d+">/.test(html);
+}
+
+function stripImageTokens(html: string): string {
+  return html.replace(INLINE_TOKEN_RE, '');
+}
+
+function rewriteImageTokens(html: string, paths: (string | null)[]): string {
+  return html.replace(INLINE_TOKEN_RE, (_match, n: string) => {
+    const path = paths[Number(n)];
+    return path ? `<img data-tsr-img="${path}">` : '';
+  });
+}
+
+/**
+ * Background image pipeline (IMG-4/6/7): fetch each kept source, upload it to the
+ * snippet's `snippet-images` folder, then rewrite the html tokens to the stored
+ * paths — dropping any that were filtered out, failed, or weren't images. Only
+ * the service worker can do this: it holds the Supabase session and, unlike the
+ * content script, isn't bound by the page's CORS policy.
+ */
+async function attachInlineImages(snippetId: string, images: (string | null)[]): Promise<void> {
+  const client = supabase;
+  if (!client || !currentUserId) return;
+  const userId = currentUserId;
+  const paths = await Promise.all(
+    images.map(async (src, index) => {
+      if (!src) return null;
+      try {
+        const response = await fetch(src);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        if (!blob.type.startsWith('image/')) return null;
+        return await uploadInlineImage(client, userId, snippetId, index, blob);
+      } catch (error) {
+        console.error('[Tessera] inline image skipped', src, error);
+        return null;
+      }
+    }),
+  );
+  const existing = await db.snippets.get(snippetId);
+  if (!existing?.html) return;
+  const rewritten = rewriteImageTokens(existing.html, paths);
+  await localUpsert(store, 'snippets', {
+    ...existing,
+    html: rewritten || undefined,
+    updatedAt: new Date().toISOString(),
+  });
+  void sync();
+  notifyChanged();
 }
 
 function liveSnippetsForUrl(url: string): Promise<Snippet[]> {
@@ -185,18 +291,42 @@ async function deleteSnippet(id: string): Promise<void> {
   const tombstone = await localDelete(store, 'snippets', id);
   if (!tombstone) return; // nothing was there
   void sync();
+  notifyChanged();
+  if (!existing || !supabase || !currentUserId) return;
+  // A lone uploaded image/screenshot object.
   if (
-    existing &&
     (existing.type === 'image' || existing.type === 'screenshot') &&
     existing.imagePath &&
-    !existing.imagePath.startsWith('http') &&
-    supabase &&
-    currentUserId
+    !existing.imagePath.startsWith('http')
   ) {
     void removeSnippetImage(supabase, existing.imagePath).catch((error: unknown) =>
       console.error('[Tessera] failed to remove stored image', error),
     );
   }
+  // Inline images of a text passage — their paths live in the saved html (IMG-8).
+  const inline = inlineImagePaths(existing.html);
+  if (inline.length > 0) {
+    void removeSnippetImages(supabase, inline).catch((error: unknown) =>
+      console.error('[Tessera] failed to remove inline images', error),
+    );
+  }
+}
+
+/** Merge a patch into an existing snippet (recolor / note from in-page actions) and sync. */
+async function updateSnippet(id: string, patch: Partial<Snippet>): Promise<{ ok: boolean }> {
+  if (!id) return { ok: false };
+  const existing = await db.snippets.get(id);
+  if (!existing) return { ok: false };
+  const merged: Snippet = {
+    ...existing,
+    ...patch,
+    id: existing.id,
+    updatedAt: new Date().toISOString(),
+  };
+  await localUpsert(store, 'snippets', merged);
+  void sync();
+  notifyChanged();
+  return { ok: true };
 }
 
 /* ---- image + screenshot capture ----------------------------------------- */
@@ -277,6 +407,7 @@ async function saveImageSnippet(
   };
   await localUpsert(store, 'snippets', snippet);
   void sync();
+  notifyChanged();
   console.info(`[Tessera] saved ${type} snippet`, id);
 }
 
@@ -318,13 +449,16 @@ async function onSignedIn(userId: string | null, email?: string): Promise<unknow
   if (userId) {
     await claimLocalSnippets(userId);
     void sync();
+    notifyChanged();
   }
+  notifyAuthChanged();
   return { user: userId ? { id: userId, email } : null };
 }
 
 async function signOut(): Promise<unknown> {
   if (supabase) await supabase.auth.signOut();
   currentUserId = null;
+  notifyAuthChanged();
   return { ok: true };
 }
 

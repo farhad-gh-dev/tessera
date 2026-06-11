@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { DocumentItem, Snippet } from '@tessera/core';
 import { Button, Spinner } from '@/components/ui';
 import { Favicon, SnippetImage } from '@/components/library/media';
+import { RichText } from '@/components/library/rich-text';
 import { useDocument, useDocumentItems, useSnippets } from '@/lib/hooks';
 import { buildSourceUrl, formatDate } from '@/lib/snippets';
 
@@ -149,11 +150,7 @@ function PrintSnippet({ snippet }: { snippet: Snippet }) {
           className="border-l-[3px] pl-4 text-[15px] leading-relaxed text-slate-800"
           style={{ borderColor: snippet.color || '#818cf8' }}
         >
-          <p className="whitespace-pre-wrap">
-            {snippet.text || (
-              <span className="italic text-slate-400">(no text captured)</span>
-            )}
-          </p>
+          <RichText snippet={snippet} emptyLabel="(no text captured)" />
         </blockquote>
       ) : (
         <div className="overflow-hidden rounded-md border border-slate-200">

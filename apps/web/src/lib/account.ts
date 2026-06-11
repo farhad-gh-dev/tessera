@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { inlineImagePaths } from '@tessera/core';
 import type { Document, DocumentItem, Snippet, SnippetTag, Tag } from '@tessera/core';
 import { clearLocalData, getDb } from '@/lib/db';
 
@@ -104,9 +105,12 @@ export async function deleteAccount(supabase: SupabaseClient): Promise<void> {
 async function removeOwnedImages(supabase: SupabaseClient): Promise<void> {
   try {
     const snippets = (await getDb().snippets.toArray()) as Snippet[];
-    const paths = snippets
+    const single = snippets
       .map((s) => s.imagePath)
       .filter((p): p is string => !!p && !p.startsWith('http'));
+    // Inline images of text passages (IMG-8) — paths are recorded in each html.
+    const inline = snippets.flatMap((s) => inlineImagePaths(s.html));
+    const paths = [...single, ...inline];
     if (paths.length > 0) await supabase.storage.from('snippet-images').remove(paths);
   } catch {
     // Ignore — the data purge below is what matters.

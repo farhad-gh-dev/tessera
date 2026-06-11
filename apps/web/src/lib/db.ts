@@ -1,5 +1,6 @@
 'use client';
 
+import { inlineImagePaths } from '@tessera/core';
 import type { Snippet } from '@tessera/core';
 import {
   DexieLocalStore,
@@ -67,7 +68,7 @@ export function createEngine(supabase: SupabaseClient): SyncEngine {
  */
 export async function updateSnippet(
   snippet: Snippet,
-  patch: Partial<Pick<Snippet, 'text' | 'note' | 'color'>>,
+  patch: Partial<Pick<Snippet, 'text' | 'html' | 'note' | 'color'>>,
 ): Promise<void> {
   const next: Snippet = { ...snippet, ...patch };
   if (patch.text !== undefined && patch.text !== snippet.text) next.edited = true;
@@ -88,13 +89,15 @@ export async function deleteSnippet(
   const existing = (await getDb().snippets.get(id)) as Snippet | undefined;
   const tombstone = await localDelete(getStore(), 'snippets', id);
   if (!tombstone) return;
+  if (!supabase || !existing) return;
   if (
-    supabase &&
-    existing &&
     (existing.type === 'image' || existing.type === 'screenshot') &&
     existing.imagePath &&
     !existing.imagePath.startsWith('http')
   ) {
     void supabase.storage.from(IMAGE_BUCKET).remove([existing.imagePath]);
   }
+  // Inline images of a text passage — their paths live in the saved html (IMG-8).
+  const inline = inlineImagePaths(existing.html);
+  if (inline.length > 0) void supabase.storage.from(IMAGE_BUCKET).remove(inline);
 }
