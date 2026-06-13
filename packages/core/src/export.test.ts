@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTextFragmentUrl, documentToMarkdown } from './export.js';
+import { buildTextFragmentUrl, documentToMarkdown, htmlToMarkdown } from './export.js';
 import type { Document, DocumentItem, Snippet } from './types.js';
 
 /* -------------------------------------------------------------------------- */
@@ -116,6 +116,21 @@ describe('documentToMarkdown', () => {
     expect(md).toContain('· en.wikipedia.org · saved 2026-06-01');
   });
 
+  it('exports captured links as Markdown links from the snippet html (EXP-1)', () => {
+    const s = snippet({
+      text: 'Read the MDN guide for details.',
+      html: '<p>Read the <a href="https://developer.mozilla.org/" target="_blank" rel="noopener noreferrer nofollow">MDN guide</a> for details.</p>',
+    });
+    const md = documentToMarkdown(doc, [item({ snippetId: s.id })], new Map([[s.id, s]]), opts);
+    expect(md).toContain('> Read the [MDN guide](<https://developer.mozilla.org/>) for details.');
+  });
+
+  it('falls back to plain text for a snippet with no html', () => {
+    const s = snippet(); // text only
+    const md = documentToMarkdown(doc, [item({ snippetId: s.id })], new Map([[s.id, s]]), opts);
+    expect(md).toContain('> Mitochondria are the powerhouse of the cell.');
+  });
+
   it('renders a per-snippet note beneath the quote (NOTE-1)', () => {
     const s = snippet({ note: 'Comes up every year.' });
     const md = documentToMarkdown(
@@ -214,5 +229,64 @@ describe('documentToMarkdown', () => {
     const md = documentToMarkdown(doc, items, new Map(), opts);
     expect(md).toContain('## Live');
     expect(md).not.toContain('## Dead');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* htmlToMarkdown                                                             */
+/* -------------------------------------------------------------------------- */
+
+describe('htmlToMarkdown', () => {
+  it('renders a safe link as a Markdown link', () => {
+    expect(
+      htmlToMarkdown(
+        '<p>See <a href="https://example.com/docs" target="_blank" rel="noopener noreferrer nofollow">the docs</a>.</p>',
+      ),
+    ).toBe('See [the docs](<https://example.com/docs>).');
+  });
+
+  it('unescapes &amp; in a link href back to a real URL', () => {
+    expect(htmlToMarkdown('<a href="https://x.com/s?a=1&amp;x=2">q</a>')).toBe(
+      '[q](<https://x.com/s?a=1&x=2>)',
+    );
+  });
+
+  it('renders inline emphasis (bold, italic, code)', () => {
+    expect(htmlToMarkdown('<p>a <strong>b</strong> <em>c</em> <code>d</code></p>')).toBe(
+      'a **b** *c* `d`',
+    );
+  });
+
+  it('renders a list with "- " bullets', () => {
+    expect(htmlToMarkdown('<ul><li>One</li><li>Two</li></ul>')).toBe('- One\n- Two');
+  });
+
+  it('separates blocks with single newlines', () => {
+    expect(htmlToMarkdown('<h2>Title</h2><p>Body.</p>')).toBe('Title\nBody.');
+  });
+
+  it('decodes escaped angle brackets and ampersands in text', () => {
+    expect(htmlToMarkdown('<p>a &lt;b&gt; c &amp; d</p>')).toBe('a <b> c & d');
+  });
+
+  it('escapes brackets in link text so the link syntax holds', () => {
+    expect(htmlToMarkdown('<a href="https://e.com/x">a [b] c</a>')).toBe(
+      '[a \\[b\\] c](<https://e.com/x>)',
+    );
+  });
+
+  it('drops inline-image tokens (no resolvable URL at export time)', () => {
+    expect(htmlToMarkdown('<p>before <img data-tsr-img="0"> after</p>')).toBe('before after');
+  });
+
+  it('handles a link wrapping emphasis', () => {
+    expect(htmlToMarkdown('<p><a href="https://e.com/p"><strong>Bold</strong> link</a></p>')).toBe(
+      '[**Bold** link](<https://e.com/p>)',
+    );
+  });
+
+  it('returns empty string for empty or image-only html', () => {
+    expect(htmlToMarkdown('')).toBe('');
+    expect(htmlToMarkdown('<img data-tsr-img="0">')).toBe('');
   });
 });

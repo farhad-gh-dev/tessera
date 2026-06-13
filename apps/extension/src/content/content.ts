@@ -333,6 +333,9 @@ async function saveSelection(range: Range, color: string): Promise<void> {
   const liveImages = liveSelectionImages(range).slice(0, MAX_INLINE_IMAGES);
   const { html, text } = serializeSelection(range.cloneContents(), {
     images: liveImages.length > 0,
+    // Resolve relative link hrefs against the page so saved links stay valid
+    // when the passage is re-displayed off-site (library / popup / panel).
+    baseUrl: document.baseURI,
   });
   const images = liveImages.length > 0 ? liveImages.map(resolveImageSrc) : undefined;
   const snippet: Partial<Snippet> = {
@@ -633,7 +636,7 @@ function openNote(snippet: Snippet): void {
   textarea.focus();
 }
 
-/** Persist the open note (only if changed); empty clears it. Used by Save, ⌘↵, and outside-click. */
+/** Persist the open note (only if changed); empty clears it. Triggered only by an explicit Save (Save button or ⌘↵). */
 function commitNote(): void {
   if (!noteEditor) return;
   const { snippet, textarea, initial } = noteEditor;
@@ -782,9 +785,10 @@ document.addEventListener('keydown', (event) => {
 document.addEventListener('mousedown', (event) => {
   // Clicks inside our own UI shouldn't dismiss it.
   if (shadow && event.composedPath().includes(shadow.host)) return;
-  // An open note editor saves on outside-click — never silently discards (N1).
+  // An open note editor discards on outside-click — edits persist only via an
+  // explicit Save (the Save button or ⌘↵), so a stray click never commits.
   if (noteEditor) {
-    commitNote();
+    cancelNote();
     return;
   }
   hideToolbar();

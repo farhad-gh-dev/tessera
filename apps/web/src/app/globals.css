@@ -85,6 +85,9 @@
   .tsr-rich em {
     @apply italic;
   }
+  .tsr-rich a {
+    @apply break-words text-indigo-600 underline underline-offset-2 hover:text-indigo-700;
+  }
 }
 
 /* Print / "Save as PDF" — used by the document print view (EXP-2). */

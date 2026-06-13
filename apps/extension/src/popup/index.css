@@ -76,4 +76,7 @@
   .tsr-rich em {
     @apply italic;
   }
+  .tsr-rich a {
+    @apply break-words text-indigo-600 underline underline-offset-2 hover:text-indigo-700;
+  }
 }

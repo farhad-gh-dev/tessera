@@ -58,19 +58,101 @@ describe('serializeSelection', () => {
     expect(html).toBe('<h3>H</h3><p>P</p>');
   });
 
-  it('strips attributes, links, scripts, and event handlers (XSS safety)', () => {
+  it('strips attributes, scripts, handlers, and unsafe-scheme links (XSS safety)', () => {
     const { html, text } = serialize(
       '<p onclick="evil()" style="color:red">hi ' +
         '<a href="javascript:alert(1)">link</a></p>' +
         '<script>alert(1)</script>' +
         '<img src=x onerror="alert(1)">',
     );
+    // The javascript: link fails the scheme allowlist → unwrapped to plain text.
     expect(html).toBe('<p>hi link</p>');
     expect(text).toBe('hi link');
-    // No attribute, URL, handler, or dropped-element text leaks through.
+    // No attribute, unsafe URL, handler, or dropped-element text leaks through.
     for (const danger of ['onclick', 'onerror', 'javascript:', 'href', 'style', '<script', '<img']) {
       expect(html).not.toContain(danger);
     }
+  });
+
+  // --- Links (<a>): safe hrefs preserved, unsafe schemes neutralized ---------
+
+  it('keeps a safe http(s) link with href, target, and rel; text keeps the label', () => {
+    const { html, text } = serialize('<p>See <a href="https://example.com/docs">the docs</a>.</p>');
+    expect(html).toBe(
+      '<p>See <a href="https://example.com/docs" target="_blank" rel="noopener noreferrer nofollow">the docs</a>.</p>',
+    );
+    expect(text).toBe('See the docs.');
+  });
+
+  it('keeps a lone link as html (MARKUP_RE includes a), not a text fallback', () => {
+    expect(serialize('<a href="https://example.com/x">link</a>').html).toBe(
+      '<a href="https://example.com/x" target="_blank" rel="noopener noreferrer nofollow">link</a>',
+    );
+  });
+
+  it('keeps inline emphasis inside a link', () => {
+    expect(serialize('<a href="https://e.com/p"><strong>Bold</strong> bit</a>').html).toBe(
+      '<a href="https://e.com/p" target="_blank" rel="noopener noreferrer nofollow"><strong>Bold</strong> bit</a>',
+    );
+  });
+
+  it('keeps mailto: and tel: links', () => {
+    expect(serialize('<a href="mailto:hi@example.com">mail</a>').html).toBe(
+      '<a href="mailto:hi@example.com" target="_blank" rel="noopener noreferrer nofollow">mail</a>',
+    );
+    expect(serialize('<a href="tel:+15551234">call</a>').html).toBe(
+      '<a href="tel:+15551234" target="_blank" rel="noopener noreferrer nofollow">call</a>',
+    );
+  });
+
+  it('drops unsafe-scheme links (javascript:, data:) — keeps the text, no href', () => {
+    const { html } = serialize(
+      '<p>x <a href="javascript:alert(1)">a</a> <a href="data:text/html,evil">b</a></p>',
+    );
+    expect(html).toBe('<p>x a b</p>');
+    expect(html).not.toContain('href');
+  });
+
+  it('unwraps an anchor with no href, keeping its text', () => {
+    const { html, text } = serialize('<p>a <a>nolink</a> b</p>');
+    expect(html).toBe('<p>a nolink b</p>');
+    expect(text).toBe('a nolink b');
+  });
+
+  it('absolutizes a relative link against opts.baseUrl', () => {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = '<p><a href="/guide">Guide</a></p>';
+    const { html } = serializeSelection(tpl.content, { baseUrl: 'https://site.test/blog/post' });
+    expect(html).toBe(
+      '<p><a href="https://site.test/guide" target="_blank" rel="noopener noreferrer nofollow">Guide</a></p>',
+    );
+  });
+
+  it('drops a relative link when no baseUrl is given (cannot be vetted)', () => {
+    expect(serialize('<p>see <a href="/guide">guide</a></p>').html).toBe('<p>see guide</p>');
+  });
+
+  it('escapes special characters (e.g. &) in a link href', () => {
+    const tpl = document.createElement('template');
+    const a = document.createElement('a');
+    a.setAttribute('href', 'https://x.com/s?a=1&x=2');
+    a.textContent = 'q';
+    tpl.content.appendChild(a);
+    expect(serializeSelection(tpl.content).html).toContain('href="https://x.com/s?a=1&amp;x=2"');
+  });
+
+  it('neutralizes attribute-breakout attempts in a link href (URL-encoded + escaped)', () => {
+    const tpl = document.createElement('template');
+    const a = document.createElement('a');
+    a.setAttribute('href', 'https://x.com/"><img src=x onerror=alert(1)>');
+    a.textContent = 'x';
+    const p = document.createElement('p');
+    p.appendChild(a);
+    tpl.content.appendChild(p);
+    const { html } = serializeSelection(tpl.content);
+    expect(html).not.toContain('"><');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('rel="noopener noreferrer nofollow"');
   });
 
   it('keeps blockquotes, code, and nested structure', () => {

@@ -66,12 +66,18 @@ export function App() {
   const visible = useMemo(() => {
     const typeSet = new Set(typeFilters);
     const colorSet = new Set(colorFilters);
-    return allLive.filter((s) => {
+    const filtered = allLive.filter((s) => {
       if (scope === 'page' && (!active.url || s.url !== active.url)) return false;
       if (typeSet.size > 0 && !typeSet.has(s.type)) return false;
       if (colorSet.size > 0 && !(s.color && colorSet.has(s.color))) return false;
       return matchesQuery(s, query, tagNames.get(s.id) ?? []);
     });
+    // This-page lists highlights oldest-first so they track the page top-to-bottom
+    // as you read; Recent stays newest-first (it's a cross-page activity feed).
+    // `filtered` is a fresh array (from .filter), so sorting it in place is safe.
+    return scope === 'page'
+      ? filtered.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      : filtered;
   }, [allLive, scope, active.url, typeFilters, colorFilters, query, tagNames]);
 
   // This-page unresolved hint (ANC-4): captures on this page that the content

@@ -61,10 +61,13 @@ function useResolvedHtml(html: string): string {
  * `text` (older or structure-free captures, and hand-edited text).
  *
  * SECURITY: `html` is written only by `serializeSelection` in `@tessera/core`, an
- * allowlist serializer that emits a fixed tag set and copies **no** page
- * attributes — so the injected markup carries no scripts, handlers, page URLs, or
- * styles. Inline-image tokens resolve to app-minted, HTML-escaped Storage signed
- * URLs (`applyInlineImageUrls`); no page-supplied URL ever reaches the sink.
+ * allowlist serializer that emits a fixed tag set and copies no page attributes
+ * except a link's `href` — and only after it is scheme-allowlisted
+ * (http/https/mailto/tel, never javascript:/data:) and HTML-escaped, with
+ * `rel="noopener noreferrer nofollow"` added. So the injected markup carries no
+ * scripts, handlers, unsafe-scheme links, or styles. Inline-image tokens resolve
+ * to app-minted, HTML-escaped Storage signed URLs (`applyInlineImageUrls`); no
+ * page-supplied image URL ever reaches the sink.
  */
 export function RichText({
   snippet,

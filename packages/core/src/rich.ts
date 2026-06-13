@@ -13,12 +13,18 @@
  *
  * SECURITY — this is an *allowlist* serializer, and that allowlist is the trust
  * boundary for everything that later injects `html` (see `RichText`). It walks
- * the DOM and emits only a fixed, closed set of tags, and **never copies any
- * attribute**. So the output can carry no `script`/`style`/`iframe`, no event
- * handlers (`onerror=…`), no URLs (`href`/`src`), and no inline styles — it is
- * safe to render via `innerHTML` / `dangerouslySetInnerHTML`. Unknown elements
- * are unwrapped (their text is kept); `<script>`/`<style>`/etc. are dropped
- * whole. Built fresh for Tessera — no external sanitizer dependency.
+ * the DOM and emits only a fixed, closed set of tags. It copies **no page
+ * attribute** save one audited exception: an `<a>`'s `href`, and only after it
+ * is (1) resolved to an absolute URL, (2) restricted to a safe-scheme allowlist
+ * (`http`/`https`/`mailto`/`tel` — never `javascript:`/`data:`/etc.), and (3)
+ * HTML-attribute-escaped; every emitted link also carries
+ * `rel="noopener noreferrer nofollow"`, and an anchor failing the check is
+ * unwrapped to its text. So the output can carry no `script`/`style`/`iframe`,
+ * no event handlers (`onerror=…`), no `src` URLs, no inline styles, and no
+ * unsafe-scheme links — it is safe to render via `innerHTML` /
+ * `dangerouslySetInnerHTML`. Unknown elements are unwrapped (their text is
+ * kept); `<script>`/`<style>`/etc. are dropped whole. Built fresh for Tessera —
+ * no external sanitizer dependency.
  */
 
 /** Inline emphasis tags we keep, normalized to a canonical name. */
@@ -104,7 +110,7 @@ export const DROP_WHOLE_ANCESTOR_SELECTOR = DROP_WHOLE_TAGS.map((t) =>
 ).join(',');
 
 /** True only when the serialized HTML actually carries markup worth keeping. */
-const MARKUP_RE = /<(?:h[1-6]|p|ul|ol|li|blockquote|pre|br|img|strong|em|u|mark|code|sub|sup)\b/i;
+const MARKUP_RE = /<(?:h[1-6]|p|ul|ol|li|blockquote|pre|br|img|a|strong|em|u|mark|code|sub|sup)\b/i;
 
 interface Walked {
   html: string;
@@ -123,12 +129,20 @@ interface Walked {
  * **attribute-free tokens** (`<img data-tsr-img="N">`, `N` in document order)
  * for a caller that resolves / filters / uploads them out-of-band (IMG-5); the
  * page's `src`/handlers are never copied. Default: images are dropped (v0.3).
+ *
+ * Safe `<a>` links are preserved (scheme-allowlisted + escaped — see SECURITY).
+ * Pass `opts.baseUrl` (e.g. `document.baseURI`) so relative hrefs resolve to
+ * absolute URLs that stay valid when the passage is re-displayed off-site.
  */
 export function serializeSelection(
   node: Node,
-  opts?: { images?: boolean },
+  opts?: { images?: boolean; baseUrl?: string },
 ): { html: string; text: string } {
-  const walked = walk(node, { imgCount: 0, images: opts?.images ?? false });
+  const walked = walk(node, {
+    imgCount: 0,
+    images: opts?.images ?? false,
+    baseUrl: opts?.baseUrl,
+  });
   const html = walked.html.trim();
   return {
     html: MARKUP_RE.test(html) ? html : '',
@@ -136,7 +150,7 @@ export function serializeSelection(
   };
 }
 
-function walk(node: Node, ctx: { imgCount: number; images: boolean }): Walked {
+function walk(node: Node, ctx: { imgCount: number; images: boolean; baseUrl?: string }): Walked {
   let html = '';
   let text = '';
   let hasBlock = false;
@@ -174,6 +188,22 @@ function walk(node: Node, ctx: { imgCount: number; images: boolean }): Walked {
     }
 
     const inner = walk(el, ctx);
+
+    if (tag === 'A') {
+      // The one place a page attribute survives: a link's href — but only after
+      // `safeHref` resolves + scheme-checks it and the emit path escapes it, plus
+      // a rel="noopener" guard (see SECURITY). A rejected/absent href unwraps.
+      const href = safeHref(el.getAttribute('href'), ctx.baseUrl);
+      if (href && inner.html) {
+        html += `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer nofollow">${inner.html}</a>`;
+      } else {
+        html += inner.html;
+      }
+      text += inner.text;
+      if (inner.hasBlock) hasBlock = true;
+      continue;
+    }
+
     const inlineTag = INLINE_TAGS[tag];
 
     if (inlineTag) {
@@ -203,7 +233,7 @@ function walk(node: Node, ctx: { imgCount: number; images: boolean }): Walked {
       continue;
     }
 
-    // Inline-ish or unknown wrapper (span, a, label, small, time, abbr, font…):
+    // Inline-ish or unknown wrapper (span, label, small, time, abbr, font…):
     // drop the wrapper and its attributes, keep the content.
     html += inner.html;
     text += inner.text;
@@ -224,6 +254,35 @@ function blockText(tag: string, inner: string): string {
 
 function escapeText(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Resolve and vet a link href for safe rendering. Returns an absolute URL only
+ * when it parses and uses a safe scheme (`http`/`https`/`mailto`/`tel`);
+ * otherwise `null`, so the caller unwraps the anchor to plain text. `baseUrl`
+ * (the page base, e.g. `document.baseURI`) lets a relative href resolve to an
+ * absolute URL — without it a relative href can't be vetted and is dropped.
+ * This is the only point page-authored URL content may enter `html`: the scheme
+ * allowlist blocks `javascript:`/`data:`/etc., and the caller HTML-escapes the
+ * result before emitting it.
+ */
+function safeHref(raw: string | null, baseUrl?: string): string | null {
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = baseUrl ? new URL(raw, baseUrl) : new URL(raw);
+  } catch {
+    return null;
+  }
+  switch (url.protocol.toLowerCase()) {
+    case 'http:':
+    case 'https:':
+    case 'mailto:':
+    case 'tel:':
+      return url.href;
+    default:
+      return null;
+  }
 }
 
 /**
