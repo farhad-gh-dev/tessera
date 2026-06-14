@@ -14,8 +14,11 @@ import { EMPTY_FILTERS, type SnippetFilters, type SnippetSort } from '@/lib/snip
  * The default lens (flat) and sort (newest) are never written.
  */
 
-/** Home grouping lens: `flat` = one feed of all snippets; `site` = grouped by website. */
-export type Lens = 'flat' | 'site';
+/**
+ * Home grouping lens: `flat` = one feed of all snippets; `site` = grouped by
+ * website; `document` = grouped by the documents that reference each snippet.
+ */
+export type Lens = 'flat' | 'site' | 'document';
 
 export interface LibraryView {
   lens: Lens;
@@ -32,7 +35,7 @@ export const DEFAULT_VIEW: LibraryView = {
   sort: DEFAULT_SORT,
 };
 
-const LENSES: readonly Lens[] = ['flat', 'site'];
+const LENSES: readonly Lens[] = ['flat', 'site', 'document'];
 const SORTS: readonly SnippetSort[] = ['newest', 'oldest', 'most_referenced'];
 const TYPES: readonly SnippetType[] = ['text', 'image', 'screenshot'];
 

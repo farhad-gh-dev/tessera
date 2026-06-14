@@ -8,6 +8,7 @@ import { cn } from '@/lib/cn';
 import { deleteSnippet, updateSnippet } from '@/lib/db';
 import { buildSourceUrl } from '@/lib/snippets';
 import { BulkAddToDocumentDialog } from '@/components/documents/bulk-add-to-document-dialog';
+import { BulkTagDialog } from '@/components/documents/bulk-tag-dialog';
 
 /** Open-all is gesture-driven; cap the burst so we don't trip the popup blocker. */
 const OPEN_ALL_CAP = 12;
@@ -21,6 +22,7 @@ const OPEN_ALL_CAP = 12;
 export function SelectionBar({ snippets, onClear }: { snippets: Snippet[]; onClear: () => void }) {
   const { supabase, syncNow } = useSession();
   const [addOpen, setAddOpen] = useState(false);
+  const [tagOpen, setTagOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [blockedHint, setBlockedHint] = useState(false);
@@ -74,6 +76,10 @@ export function SelectionBar({ snippets, onClear }: { snippets: Snippet[]; onCle
 
           <Button size="sm" variant="secondary" onClick={() => setAddOpen(true)} disabled={busy}>
             Add to document
+          </Button>
+
+          <Button size="sm" variant="secondary" onClick={() => setTagOpen(true)} disabled={busy}>
+            Tag
           </Button>
 
           <div className="flex items-center gap-1" role="group" aria-label="Recolor selection">
@@ -136,6 +142,13 @@ export function SelectionBar({ snippets, onClear }: { snippets: Snippet[]; onCle
           snippetIds={snippets.map((s) => s.id)}
           open
           onClose={() => setAddOpen(false)}
+        />
+      )}
+      {tagOpen && (
+        <BulkTagDialog
+          snippetIds={snippets.map((s) => s.id)}
+          open
+          onClose={() => setTagOpen(false)}
         />
       )}
     </>

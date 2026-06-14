@@ -14,6 +14,7 @@ import {
 } from '@/components/library/onboarding-checklist';
 import {
   useDocuments,
+  useSnippetDocumentMap,
   useSnippetRefCounts,
   useSnippets,
   useSnippetTagMap,
@@ -40,6 +41,9 @@ import { SMART_VIEWS, activeSmartViewId, type SmartView } from '@/lib/smart-view
 import { useScrollRestoration } from '@/lib/use-scroll-restoration';
 import { SelectionProvider } from '@/components/library/selection-context';
 import { SelectionBar } from '@/components/library/selection-bar';
+import { DocumentLens } from '@/components/library/document-lens';
+import { ResurfaceStrip } from '@/components/library/resurface-strip';
+import { useResurface } from '@/lib/use-resurface';
 
 /**
  * The library home. Defaults to a flat, newest-first feed of **every** snippet
@@ -54,6 +58,7 @@ export function LibraryHome() {
   const tags = useTags();
   const tagsBySnippet = useSnippetTagMap();
   const refCounts = useSnippetRefCounts();
+  const snippetDocs = useSnippetDocumentMap();
   const [dismissed, dismiss] = useOnboardingDismissed();
   const [density, setDensity] = useDensity();
 
@@ -73,6 +78,9 @@ export function LibraryHome() {
     () => ({ selectedIds, active: selectionActive, toggle: toggleSelect }),
     [selectedIds, selectionActive, toggleSelect],
   );
+
+  // Rediscovery (DISC-1): a "Revisit" set picked once when snippets are ready.
+  const { picks: resurfacePicks, dismiss: dismissResurface } = useResurface(snippets, refCounts);
 
   // View state (lens + filters + sort) is seeded from the URL and mirrored back to it.
   const searchParams = useSearchParams();
@@ -193,7 +201,7 @@ export function LibraryHome() {
 
       <div className="mb-4 flex items-center justify-between gap-3">
         <LensToggle lens={view.lens} onChange={setLens} />
-        {view.lens === 'flat' && <DensityToggle density={density} onChange={setDensity} />}
+        {view.lens !== 'site' && <DensityToggle density={density} onChange={setDensity} />}
       </div>
 
       <FiltersBar
@@ -208,6 +216,10 @@ export function LibraryHome() {
       />
 
       <SmartViewsBar activeId={activeViewId} onApply={applySmartView} />
+
+      {view.lens === 'flat' && !filtering && !selectionActive && (
+        <ResurfaceStrip picks={resurfacePicks} onDismissItem={dismissResurface} />
+      )}
 
       {results.length === 0 ? (
         <NoResults onClear={clearFilters} />
@@ -236,18 +248,28 @@ export function LibraryHome() {
                 : 'snippets'}
           </p>
           <SelectionProvider value={selectionValue}>
-            <SnippetFeed
-              density={density}
-              snippets={results}
-              tagsBySnippet={tagsBySnippet}
-              refCounts={refCounts}
-              storageKey={restoreKey}
-            />
+            {view.lens === 'document' ? (
+              <DocumentLens
+                snippets={results}
+                snippetDocs={snippetDocs}
+                density={density}
+                tagsBySnippet={tagsBySnippet}
+                refCounts={refCounts}
+              />
+            ) : (
+              <SnippetFeed
+                density={density}
+                snippets={results}
+                tagsBySnippet={tagsBySnippet}
+                refCounts={refCounts}
+                storageKey={restoreKey}
+              />
+            )}
           </SelectionProvider>
         </>
       )}
 
-      {view.lens === 'flat' && selectionActive && (
+      {view.lens !== 'site' && selectionActive && (
         <SelectionBar snippets={selectedSnippets} onClear={clearSelection} />
       )}
     </div>
@@ -257,6 +279,7 @@ export function LibraryHome() {
 const LENS_OPTIONS: { value: Lens; label: string }[] = [
   { value: 'flat', label: 'All snippets' },
   { value: 'site', label: 'By website' },
+  { value: 'document', label: 'By document' },
 ];
 
 /** Segmented control switching the home between the flat feed and by-website grouping. */

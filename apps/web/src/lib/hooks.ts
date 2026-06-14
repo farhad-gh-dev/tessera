@@ -143,6 +143,37 @@ export function useSnippetRefCounts(): Map<string, number> | undefined {
   }, [userId]);
 }
 
+/** Map of snippetId → the documents that reference it (the By-document lens, VIEW-4). */
+export function useSnippetDocumentMap(): Map<string, Document[]> | undefined {
+  const { user } = useSession();
+  const userId = user?.id;
+  return useLiveQuery(async () => {
+    const map = new Map<string, Document[]>();
+    if (!userId) return map;
+    const [items, docs] = await Promise.all([
+      getDb().document_items.toArray() as Promise<DocumentItem[]>,
+      getDb().documents.toArray() as Promise<Document[]>,
+    ]);
+    const docById = new Map(
+      docs.filter((d) => d.deletedAt == null && d.userId === userId).map((d) => [d.id, d]),
+    );
+    for (const i of items) {
+      if (i.deletedAt != null || i.userId !== userId || i.kind !== 'snippet_ref' || !i.snippetId) {
+        continue;
+      }
+      const doc = docById.get(i.documentId);
+      if (!doc) continue;
+      const arr = map.get(i.snippetId);
+      if (arr) {
+        if (!arr.some((d) => d.id === doc.id)) arr.push(doc);
+      } else {
+        map.set(i.snippetId, [doc]);
+      }
+    }
+    return map;
+  }, [userId]);
+}
+
 /** All of the user's tags (for the tag filter and pickers). */
 export function useTags(): Tag[] | undefined {
   const { user } = useSession();
