@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.47.10",
+    "@tanstack/react-virtual": "^3.14.2",
     "@tessera/core": "*",
     "@tessera/db": "*",
     "clsx": "^2.1.1",

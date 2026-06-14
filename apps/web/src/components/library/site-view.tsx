@@ -33,7 +33,7 @@ export function SiteView({ domain }: { domain: string }) {
   return (
     <div>
       <Link
-        href="/"
+        href="/?lens=site"
         className="mb-4 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700"
       >
         <span aria-hidden="true">←</span> All websites

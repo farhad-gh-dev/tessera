@@ -94,6 +94,9 @@ export interface SnippetFilters {
   /** Inclusive ISO date bounds (yyyy-mm-dd), or empty. */
   from: string;
   to: string;
+  /** Smart-view predicates (FIND-6): only snippets with a note / with no tags. */
+  hasNote?: boolean;
+  untagged?: boolean;
 }
 
 export const EMPTY_FILTERS: SnippetFilters = {
@@ -103,6 +106,8 @@ export const EMPTY_FILTERS: SnippetFilters = {
   tags: [],
   from: '',
   to: '',
+  hasNote: false,
+  untagged: false,
 };
 
 export function hasActiveFilters(f: SnippetFilters): boolean {
@@ -112,15 +117,27 @@ export function hasActiveFilters(f: SnippetFilters): boolean {
     f.colors.length > 0 ||
     f.tags.length > 0 ||
     f.from !== '' ||
-    f.to !== ''
+    f.to !== '' ||
+    f.hasNote === true ||
+    f.untagged === true
   );
 }
 
-/** Full-text-ish match across the fields a user would search by (LIB-3). */
-export function matchesQuery(s: Snippet, query: string): boolean {
+/**
+ * Full-text-ish match across the fields a user searches by (LIB-3): the snippet's
+ * text, note, page title, URL, and domain — plus any `extra` strings the caller
+ * folds in. The library passes a snippet's attached **tag names** here so a search
+ * like "biology" also hits its tagged snippets (FIND-1; previously tags were
+ * promised but never searched). An empty / whitespace-only query matches everything.
+ */
+export function matchesQuery(
+  s: Snippet,
+  query: string,
+  extra: readonly string[] = [],
+): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  const haystack = [s.text, s.note, s.pageTitle, s.url, s.domain]
+  const haystack = [s.text, s.note, s.pageTitle, s.url, s.domain, ...extra]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
@@ -135,18 +152,23 @@ export function filterSnippets(
   const typeSet = new Set(f.types);
   const colorSet = new Set(f.colors);
   const tagSet = new Set(f.tags);
+  const hasQuery = f.query.trim() !== '';
+  const needTags = tagSet.size > 0 || hasQuery || f.untagged === true;
   // `to` is inclusive of the whole day.
   const toBound = f.to ? `${f.to}T23:59:59.999Z` : '';
   return snippets.filter((s) => {
     if (typeSet.size > 0 && !typeSet.has(s.type)) return false;
     if (colorSet.size > 0 && !(s.color && colorSet.has(s.color))) return false;
+    if (f.hasNote && !(s.note && s.note.trim() !== '')) return false;
+    // Tags power the tag filter, tag-name search (FIND-1), and the untagged view.
+    const snipTags = needTags ? tagsBySnippet?.get(s.id) : undefined;
     if (tagSet.size > 0) {
-      const snipTags = tagsBySnippet?.get(s.id);
       if (!snipTags || !snipTags.some((t) => tagSet.has(t.id))) return false;
     }
+    if (f.untagged && snipTags && snipTags.length > 0) return false;
     if (f.from && s.createdAt < f.from) return false;
     if (toBound && s.createdAt > toBound) return false;
-    if (!matchesQuery(s, f.query)) return false;
+    if (hasQuery && !matchesQuery(s, f.query, snipTags?.map((t) => t.name))) return false;
     return true;
   });
 }
@@ -174,6 +196,43 @@ export function distinctColors(snippets: Snippet[]): string[] {
   const seen = new Set<string>();
   for (const s of snippets) if (s.color) seen.add(s.color);
   return [...seen];
+}
+
+/** Per-facet result counts for the filter tray (FIND-3). */
+export interface FacetCounts {
+  types: Map<SnippetType, number>;
+  colors: Map<string, number>;
+  tags: Map<string, number>;
+}
+
+/**
+ * Count how many snippets each facet value would match (FIND-3). Each dimension
+ * is counted over the set filtered by every *other* active facet — standard
+ * faceted-search semantics, so a count reads as "how many you'd get if you also
+ * picked this", and toggling within one facet (OR) doesn't zero out its siblings.
+ */
+export function computeFacetCounts(
+  snippets: Snippet[],
+  f: SnippetFilters,
+  tagsBySnippet?: Map<string, Tag[]>,
+): FacetCounts {
+  const types = new Map<SnippetType, number>();
+  for (const s of filterSnippets(snippets, { ...f, types: [] }, tagsBySnippet)) {
+    types.set(s.type, (types.get(s.type) ?? 0) + 1);
+  }
+
+  const colors = new Map<string, number>();
+  for (const s of filterSnippets(snippets, { ...f, colors: [] }, tagsBySnippet)) {
+    if (s.color) colors.set(s.color, (colors.get(s.color) ?? 0) + 1);
+  }
+
+  const tags = new Map<string, number>();
+  for (const s of filterSnippets(snippets, { ...f, tags: [] }, tagsBySnippet)) {
+    const ts = tagsBySnippet?.get(s.id);
+    if (ts) for (const t of ts) tags.set(t.id, (tags.get(t.id) ?? 0) + 1);
+  }
+
+  return { types, colors, tags };
 }
 
 /* -------------------------------------------------------------------------- */

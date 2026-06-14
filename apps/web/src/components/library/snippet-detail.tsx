@@ -44,22 +44,30 @@ export function SnippetDetail({ id }: { id: string }) {
 
   const label = snippet.domain.replace(/^www\./, '');
   const sync = () => void syncNow();
+  // Return to wherever the user came from (the flat library, a search result, or a
+  // site drill-down) rather than always forcing the site view; fall back to the
+  // library when there's no in-app history (e.g. a deep-linked snippet).
+  const goBack = () => {
+    if (window.history.length > 1) router.back();
+    else router.push('/');
+  };
 
   async function handleDelete() {
     setDeleting(true);
     await deleteSnippet(supabase, id);
     sync();
-    router.push(`/site/${encodeURIComponent(snippet!.domain)}`);
+    goBack();
   }
 
   return (
     <div className="mx-auto max-w-3xl">
-      <Link
-        href={`/site/${encodeURIComponent(snippet.domain)}`}
+      <button
+        type="button"
+        onClick={goBack}
         className="mb-4 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700"
       >
-        <span aria-hidden="true">←</span> {label}
-      </Link>
+        <span aria-hidden="true">←</span> Back
+      </button>
 
       <Card className="overflow-hidden">
         <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3">
